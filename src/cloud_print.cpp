@@ -472,15 +472,25 @@ std::string build_task_body(const BBL::PrintParams& p,
        << json_or_default(p.ams_mapping_info, "[]");
     os << ",\"amsMapping\":"  << json_or_default(p.ams_mapping, "[-1]");
     os << ",\"amsMapping2\":" << ams_mapping2_for_cloud(p);
+    if (!p.nozzle_mapping.empty()) {
+        os << ",\"nozzleMapping\":" << p.nozzle_mapping; // TODO: test
+    }
     os << ",\"autoBedLeveling\":"     << p.auto_bed_leveling;
     os << ",\"bedLeveling\":"         << to_bool(p.task_bed_leveling);
     os << ",\"bedType\":" << json_escape(p.task_bed_type.empty()
                                          ? std::string{"auto"} : p.task_bed_type);
-    os << ",\"cfg\":\"0\"";
+
+    int cfg_bits = 0;
+    #if ABI_VERSION >= 0x020503
+        if (p.task_timelapse_use_internal) cfg_bits |= 4;
+    #endif
+    os << ",\"cfg\":\"" << cfg_bits << "\"";
     os << ",\"cover\":\"\"";
     os << ",\"deviceId\":"     << json_escape(p.dev_id);
     os << ",\"extrudeCaliFlag\":"         << p.auto_flow_cali;
-    os << ",\"extrudeCaliManualMode\":"   << p.extruder_cali_manual_mode;
+    #if ABI_VERSION >= 0x020400
+        os << ",\"extrudeCaliManualMode\":"   << p.extruder_cali_manual_mode;
+    #endif
     os << ",\"filamentSettingIds\":[]";
     os << ",\"flowCali\":"            << to_bool(p.task_flow_cali);
     os << ",\"layerInspect\":"        << to_bool(p.task_layer_inspect);

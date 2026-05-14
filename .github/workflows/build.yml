@@ -65,6 +65,9 @@ jobs:
       fail-fast: false
       matrix:
         abi:
+          - 02.03.00
+          - 02.03.01
+          - 02.04.00
           - 02.05.00
           - 02.05.01
           - 02.05.02
@@ -135,6 +138,9 @@ jobs:
       fail-fast: false
       matrix:
         abi:
+          - 02.03.00
+          - 02.03.01
+          - 02.04.00
           - 02.05.00
           - 02.05.01
           - 02.05.02
@@ -145,22 +151,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      # Shallow clone at master does not necessarily contain the commit in
-      # vcpkg.json "builtin-baseline" — manifest resolution needs that tree.
-      - name: Bootstrap vcpkg (builtin-baseline from vcpkg.json)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:GITHUB_WORKSPACE 'vcpkg'
-          $baseline = '7147ac1294ef9647e8679e1183ac440a5d0a63b7'
-          if (Test-Path $root) { Remove-Item -Recurse -Force $root }
-          New-Item -ItemType Directory -Path $root | Out-Null
-          git init $root
-          git -C $root remote add origin https://github.com/microsoft/vcpkg.git
-          git -C $root fetch --depth 1 origin $baseline
-          git -C $root checkout --detach FETCH_HEAD
-          & "$root/bootstrap-vcpkg.bat" -disableMetrics
 
       - name: Configure
         shell: pwsh
@@ -174,9 +164,7 @@ jobs:
             -Prefix $staging `
             -PatchConf:$false `
             -RegisterDShowFilter:$false `
-            -EnableTests:$true `
-            -VcpkgRoot (Join-Path $env:GITHUB_WORKSPACE 'vcpkg') `
-            -Generator 'Visual Studio 17 2022'
+            -EnableTests:$true
 
       - name: Build
         shell: pwsh

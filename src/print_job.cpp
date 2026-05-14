@@ -411,12 +411,14 @@ std::string build_project_file_json(const BBL::PrintParams& p,
     }
     os << ",\"auto_bed_leveling\":"  << p.auto_bed_leveling;
     os << ",\"nozzle_offset_cali\":" << p.auto_offset_cali;
-    // Studio leaves -1 when set_print_config() was never called (e.g.
-    // headless / SDK paths). Skip the field in that case rather than
-    // forwarding the sentinel; the firmware then keeps its default PA mode.
-    if (p.extruder_cali_manual_mode >= 0) {
-        os << ",\"extrude_cali_manual_mode\":" << p.extruder_cali_manual_mode;
-    }
+    #if ABI_VERSION >= 0x020400
+        // Studio leaves -1 when set_print_config() was never called (e.g.
+        // headless / SDK paths). Skip the field in that case rather than
+        // forwarding the sentinel; the firmware then keeps its default PA mode.
+        if (p.extruder_cali_manual_mode >= 0) {
+            os << ",\"extrude_cali_manual_mode\":" << p.extruder_cali_manual_mode;
+        }
+    #endif
 
     // `cfg` is a string-encoded bitmask the stock plugin builds from
     // PrintParams flags that don't have a dedicated MQTT field. So far
