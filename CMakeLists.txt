@@ -5,6 +5,13 @@ project(open-bambu-networking
     LANGUAGES CXX
 )
 
+# Vendored mosquitto pulls cJSON via FetchContent; released cJSON tags still
+# declare cmake_minimum_required(VERSION 3.0) or older. CMake 3.31+ rejects
+# that unless we raise the policy floor (same effect as -DCMAKE_POLICY_VERSION_MINIMUM=3.5).
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.31")
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 # Which slicer this build targets. Drives the install layout (.so file
 # name, OTA manifest presence, which conf file is patched). The plugin
 # code itself does NOT change between clients -- the same C ABI is used.
@@ -203,6 +210,12 @@ else()
     # match it so std::string layout lines up across the boundary.
     add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=1)
     add_compile_options(-Wall -Wextra -Wno-unused-parameter -Wno-unused-variable)
+    # Clang/AppleClang always; GNU only since GCC 8 (older toolchains reject the flag).
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang" OR
+            (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+                CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "8"))
+        add_compile_options(-Wno-unused-lambda-capture)
+    endif()
     # Hide every symbol by default, explicitly export only the ABI functions
     # via __attribute__((visibility("default"))) (see include/obn/abi_export.hpp).
     add_compile_options(
@@ -651,7 +664,7 @@ endif()
 # time inside a CMake script-mode interpreter, so the file is allowed
 # to use string(JSON), file(READ/WRITE), foreach, etc. just like a
 # regular CMakeLists.
-if(OBN_PATCH_CLIENT_CONF AND ((UNIX AND NOT APPLE) OR WIN32))
+if(OBN_PATCH_CLIENT_CONF AND (UNIX OR WIN32))
     set(_obn_patch_out
         "${CMAKE_CURRENT_BINARY_DIR}/patch_${OBN_CLIENT_TYPE}_conf.cmake")
     configure_file("${OBN_CLIENT_CONF_PATCH_SCRIPT}"
