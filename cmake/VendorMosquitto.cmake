@@ -5,6 +5,11 @@ function(obn_vendor_mosquitto_setup)
     find_package(Threads REQUIRED)
     include(FetchContent)
 
+    # FetchContent_Populate is deprecated (CMP0169 NEW)
+    if(POLICY CMP0169)
+        cmake_policy(SET CMP0169 OLD)
+    endif()
+
     include("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/VendorCJSON.cmake")
     obn_vendor_cjson_setup()
 
@@ -25,7 +30,16 @@ function(obn_vendor_mosquitto_setup)
     set(WITH_STATIC_LIBRARIES ON CACHE BOOL "" FORCE)
     set(WITH_PIC ON CACHE BOOL "" FORCE)
     set(WITH_LIB_CPP OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(eclipse_mosquitto)
+
+    # MakeAvailable = Populate + add_subdirectory; we patch sources first so
+    # OpenSSL 3.5+ systems without openssl/engine.h still compile (issue #19).
+    FetchContent_GetProperties(eclipse_mosquitto)
+    if(NOT eclipse_mosquitto_POPULATED)
+        FetchContent_Populate(eclipse_mosquitto)
+        include("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/VendorMosquittoOpenSSL35Patch.cmake")
+        obn_patch_mosquitto_openssl35_engine("${eclipse_mosquitto_SOURCE_DIR}")
+    endif()
+    add_subdirectory("${eclipse_mosquitto_SOURCE_DIR}" "${eclipse_mosquitto_BINARY_DIR}")
 
     if(NOT TARGET libmosquitto_static)
         message(FATAL_ERROR
