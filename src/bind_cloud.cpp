@@ -136,7 +136,7 @@ int bind_lan_to_account(Agent* agent,
     emit(update_fn, BBL::LoginStageLogin, 0, {});
 
     std::string dev_name = agent->device_display_name_for_ip(dev_ip);
-    if (dev_name.empty()) dev_name = "Bambu Printer";
+    if (dev_name.empty()) dev_name = "Printer";
 
     auto hdrs = agent->cloud_api_http_headers();
     if (hdrs.find("Authorization") == hdrs.end()) {

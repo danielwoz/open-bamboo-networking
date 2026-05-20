@@ -660,7 +660,7 @@ try {
         // request as legacy.
         std::map<std::string, std::string> hdrs;
         hdrs["X-BBL-Client-Type"]    = "slicer";
-        hdrs["X-BBL-Client-Name"]    = "BambuStudio";
+        hdrs["X-BBL-Client-Name"]    = "OpenBambooNetworking";
         hdrs["X-BBL-Client-Version"] = "02.05.03.99";
         hdrs["X-BBL-OS-Type"]        = "linux";
         hdrs["X-BBL-OS-Version"]     = "1.0.0";

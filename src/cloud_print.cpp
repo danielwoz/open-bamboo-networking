@@ -205,7 +205,7 @@ std::map<std::string, std::string> bbl_headers(const std::string& access_token,
     h["Authorization"]        = "Bearer " + access_token;
     h["Content-Type"]         = "application/json";
     h["Accept"]               = "application/json";
-    h["X-BBL-Client-Name"]    = "BambuStudio";
+    h["X-BBL-Client-Name"]    = "OpenBambooNetworking";
     h["X-BBL-Client-Type"]    = "slicer";
     h["X-BBL-OS-Type"]        = "linux";
     h["X-BBL-Agent-OS-Type"]  = "linux";

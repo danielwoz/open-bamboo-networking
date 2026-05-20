@@ -81,7 +81,7 @@ struct curl_slist* studio_headers()
 {
     struct curl_slist* h = nullptr;
     h = curl_slist_append(h, "X-BBL-Client-Type: slicer");
-    h = curl_slist_append(h, "X-BBL-Client-Name: BambuStudio");
+    h = curl_slist_append(h, "X-BBL-Client-Name: OpenBambooNetworking");
     h = curl_slist_append(h, "X-BBL-OS-Type: linux");
     return h;
 }
