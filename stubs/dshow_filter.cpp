@@ -1295,7 +1295,7 @@ HRESULT STDMETHODCALLTYPE BambuSourceFilter::JoinFilterGraph(IFilterGraph* pGrap
 HRESULT STDMETHODCALLTYPE BambuSourceFilter::QueryVendorInfo(LPWSTR* pVendorInfo)
 {
     if (!pVendorInfo) return E_POINTER;
-    static const wchar_t k[] = L"open-bambu-networking";
+    static const wchar_t k[] = L"open-bamboo-networking";
     auto* buf = static_cast<wchar_t*>(::CoTaskMemAlloc(sizeof(k)));
     if (!buf) return E_OUTOFMEMORY;
     std::memcpy(buf, k, sizeof(k));

@@ -1,5 +1,5 @@
 #!/bin/sh
-# ABI-compatibility checker for open-bambu-networking.
+# ABI-compatibility checker for open-bamboo-networking.
 #
 # Baselines live under tools/abi_snapshot/vMM.mm.pp/ (first three version
 # components of a Studio git tag, e.g. v02.06.00.51 -> v02.06.00). That

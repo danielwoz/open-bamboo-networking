@@ -1,4 +1,4 @@
-# STATUS — ABI coverage of `open-bambu-networking`
+# STATUS — ABI coverage of `open-bamboo-networking`
 
 This document tracks how each symbol listed in [NETWORK_PLUGIN.md § 6](NETWORK_PLUGIN.md#6-the-full-c-abi-contract) is handled by this open-source plugin. Top-level `##` headings group related surfaces; **subsection numbers (`### 6._n_`) match the same §6._n_ titles in the reference** so you can jump between the two documents. Everything that talks to Bambu’s cloud over **HTTPS** (and the closely related **cloud MQTT** session in §6.3) is rolled into one block, **Cloud & HTTP APIs**, with subsections below it.
 

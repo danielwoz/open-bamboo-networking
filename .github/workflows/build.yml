@@ -1,4 +1,4 @@
-# Build and test open-bambu-networking on Linux x64 / aarch64 and on
+# Build and test open-bamboo-networking on Linux x64 / aarch64 and on
 # Windows x64 (MSVC + vcpkg manifest).
 #
 # Version strategy: the plugin must report a string whose first 8 characters

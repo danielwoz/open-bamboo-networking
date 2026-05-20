@@ -1,7 +1,7 @@
 # OpenSSL 3.5+ (e.g. Fedora 44 openssl-devel) no longer ships openssl/engine.h when
 # ENGINE is disabled. Mosquitto v2.1.2 includes it unconditionally; wrap with
 # OPENSSL_NO_ENGINE like upstream OpenSSL headers. See:
-# https://github.com/ClusterM/open-bambu-networking/issues/19
+# https://github.com/ClusterM/open-bamboo-networking/issues/19
 
 function(obn_patch_mosquitto_openssl35_engine _src_root)
     if(NOT IS_DIRECTORY "${_src_root}/lib")

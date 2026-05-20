@@ -1,4 +1,4 @@
-# Open Bambu Networking
+# Open Bamboo Networking
 
 Open-source drop-in replacement for Bambu Studio's proprietary `bambu_networking`
 plugin.
@@ -162,11 +162,11 @@ below usually means it works 100% on **P2S**.
 
 **Community help is essential.** If you use another printer model or
 CPU architecture, please try the plugin and open an issue:
-[https://github.com/ClusterM/open-bambu-networking/issues](https://github.com/ClusterM/open-bambu-networking/issues)
+[https://github.com/ClusterM/open-bamboo-networking/issues](https://github.com/ClusterM/open-bamboo-networking/issues)
 with what works, what fails, and your firmware / OS / Studio version —
 that is how we turn "not tested" into documented reality. Bug reports,
 regressions, and small compatibility notes all belong in
-**[Issues](https://github.com/ClusterM/open-bambu-networking/issues)**.
+**[Issues](https://github.com/ClusterM/open-bamboo-networking/issues)**.
 
 The tables below are a feature-level view. For an ABI-level view —
 every single function Studio resolves from the plugin, with per-symbol

@@ -5,7 +5,7 @@ just enough to load any `libbambu_networking.so` (a specific upstream
 release), drive its print entry points with a user-supplied
 `BBL::PrintParams`, and let the real MQTT publish hit your printer. It
 exists so we can diff the wire output of the **stock** plugin against
-our own `open-bambu-networking` build without firing up the whole IDE.
+our own `open-bamboo-networking` build without firing up the whole IDE.
 
 The wrapper script ([`tools/plugin_runner.sh`](../plugin_runner.sh)) is
 the only thing humans should call. It picks the right ABI, builds the

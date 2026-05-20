@@ -663,7 +663,7 @@ struct Client::Impl {
         int  n = std::snprintf(buf, sizeof(buf),
             "%s %s RTSP/1.0\r\n"
             "CSeq: %d\r\n"
-            "User-Agent: open-bambu-networking/0.1\r\n"
+            "User-Agent: open-bamboo-networking/0.1\r\n"
             "%s%s%s",
             method, url.c_str(), cseq++,
             session_id.empty() ? "" : "Session: ",

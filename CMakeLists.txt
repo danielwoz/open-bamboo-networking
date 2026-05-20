@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
-project(open-bambu-networking
+project(open-bamboo-networking
     VERSION 0.1.0
-    DESCRIPTION "Open-source replacement for Bambu Studio's bambu_networking plugin"
+    DESCRIPTION "Open Bamboo Networking — open-source replacement for Bambu Studio's bambu_networking plugin"
     LANGUAGES CXX
 )
 
