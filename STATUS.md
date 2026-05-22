@@ -11,7 +11,7 @@ This document tracks how each symbol listed in [NETWORK_PLUGIN.md § 6](NETWORK_
 | 🔒 | Cannot be implemented without proprietary secrets (per-install RSA signing keys, TUTK / Agora SDK). |
 | ⚠️ | Implemented with limitations — the happy path works, but some user-visible behaviour is degraded vs. stock. |
 | 🔒⚠️ | Partial: the secret-protected path is not possible, but the remaining path (typically LAN under Developer Mode) is functional. |
-| ✨ | Implemented via a workaround — end result matches stock behaviour but over a different transport or by synthesising the response locally. |
+| ✨ | Implemented via a workaround — end result matches stock behaviour on the **supported subset** but over a different transport or by synthesising the response locally. Known gaps vs stock are called out in the Notes column (see [PrinterFileSystem](#printerfilesystem-mediafilepanel) for internal storage). |
 | ❓ | Exported for binary compatibility but not currently resolved by Bambu Studio, so behaviour against real Studio code cannot be verified. Body is a minimal stub. |
 
 > Note on `❌`: some of these return `BAMBU_NETWORK_SUCCESS` with an empty payload rather than an error code. This is intentional — the corresponding feature is not wired to any remote backend, and returning success with empty data is what keeps Studio from showing error dialogs for features that are simply unused in this plugin. The "what is actually returned" is stated per row in the Notes column.
@@ -210,7 +210,7 @@ Source: [src/lan_tls.cpp](src/lan_tls.cpp), [include/obn/lan_tls_env.hpp](includ
 | Trust anchors | ✅ | **`printer.cer`** (BBL CA bundle from Studio) plus optional **snapshotted device leaf** (`<config_dir>/certs/<serial>.pem`). On N7/P2S firmware the printer sends leaf-only; the per-series Device CA is not in `printer.cer` — leaf pin is required for chain verify. |
 | Hostname check | ✅ | Connect by IP; cert CN = serial, no usable SAN. SNI and post-handshake CN check use the printer serial (`dev_id`), not the IP. |
 | MQTT :8883 | ✅ (tested P2S) | Vendored libmosquitto patched for `mosquitto_tls_verify_hostname_set` when connecting to an IP. |
-| FTPS :990 | ✅ (tested P2S) | Print job, `ft_*` fastpath, BambuSource file browser. |
+| FTPS :990 | ✅ (tested P2S) | Print job, `ft_*` fastpath, BambuSource file browser (**external USB only** on P2S — see [PrinterFileSystem](#printerfilesystem-mediafilepanel)). |
 | RTSPS :322 / MJPEG :6000 | ✅ (tested P2S) | Implemented in `libBambuSource` (`stubs/tls_socket.cpp`). |
 | Cross-library IPC | ✅ | `libbambu_networking` and `libBambuSource` are separate dlopen loads. Networking syncs registry → process env + **`<config_dir>/obn.lan_tls.env`**. BambuSource reads env (Linux: `getenv`; Windows: `GetEnvironmentVariableA`) and hydrates from the state file on miss. |
 | Bootstrap snapshot | ✅ | `cert_store.cpp` uses verify-off **once** to capture the device leaf PEM before trust anchors exist; not used for normal LAN sessions. |
@@ -387,36 +387,46 @@ The build is intentionally minimal-dependency: only OpenSSL and zlib, **no `liba
 
 Studio's **MediaFilePanel** opens a port-6000 tunnel through `libBambuSource.so` and switches it to a CTRL channel via `Bambu_StartStreamEx(CTRL_TYPE)`. It then sends JSON request/response messages (`LIST_INFO`, `SUB_FILE`, `FILE_DOWNLOAD`, `FILE_DEL`, `REQUEST_MEDIA_ABILITY`, `TASK_CANCEL`) that Studio renders as **Device → Files** (timelapses, camera recordings, printed models with thumbnails).
 
-Our `libBambuSource.so` does **not** speak the proprietary CTRL **wire** protocol to the printer on that socket; instead a worker thread per tunnel services those JSON requests over **FTPS :990** (the same service used for LAN print uploads). That gives the file browser on every printer reachable over TLS on 990, regardless of whether the firmware implements native CTRL on 6000.
+**Stock vs open plugin (P2S, verified May 2026).** Stock `libBambuSource` keeps **TLS :6000** open to printer firmware for the whole session; file lists and thumbnails travel on that socket — **no FTPS :990** during Device → Files (LAN capture: filter `ip.addr==<printer> && tcp.port != 8883`). Our workaround closes :6000 after auth and maps CTRL JSON to **FTPS :990** in-process — see [NETWORK_PLUGIN.md §7.5.1](NETWORK_PLUGIN.md#751-where-the-printer-side-bytes-actually-come-from).
 
-Supported operations (CTRL → FTPS mapping):
+**Internal vs External tabs** (when Studio shows both, `is_support_internal_timelapse`):
+
+| Tab | `req.storage` | Stock P2S | Our workaround |
+| --- | --- | --- | --- |
+| External | absent / `""` | :6000 → external volume | FTPS when USB mounted (root = stick) |
+| Internal | `"internal"` | :6000 → eMMC timelapses | **Not implemented** |
+
+FTPS on P2S without USB: login succeeds but **`LIST /` → 0 entries** — internal eMMC is **not** exposed on :990. Do not confuse with **timelapse recording** to internal during print: that uses MQTT `project_file` `"cfg":"4"` from `libbambu_networking` (✅) and is unrelated to this file browser.
+
+Our FTPS bridge scope (**external USB only** on P2S):
 
 - `REQUEST_MEDIA_ABILITY` — probe `/sdcard` and `/usb`; if neither exists, treat the FTPS root as the storage mount (P2S-style USB-only) and report it as `"sdcard"` to Studio.
-- `LIST_INFO` — `LIST` (firmware does not implement `MLSD`) on `<prefix>/timelapse/` (timelapse tab), `<prefix>/ipcam/` (manual video tab), `<prefix>/` (model tab). Files are filtered by extension (`.mp4`, `.3mf`, `.gcode.3mf`).
-- `SUB_FILE` thumbnails — timelapses: fetch sidecar `.jpg`; `.3mf`: download the archive, parse the central directory, `inflate` `Metadata/plate_1.png` (or `plate_no_light_1.png`) with zlib raw deflate — no external ZIP dependency.
-- `FILE_DOWNLOAD` — streaming `RETR` with 256 KB chunks; each chunk is a separate `CONTINUE` reply; final reply `SUCCESS`.
-- `FILE_DEL` — `DELE` per path (modern `{"paths":[…]}` only; legacy `{"delete":[…]}` not used by current Studio).
-- `TASK_CANCEL` — marks a sequence number; the worker aborts the relevant multi-chunk response at the next checkpoint.
+- `LIST_INFO` — `LIST` on `<prefix>/timelapse/`, `<prefix>/ipcam/`, `<prefix>/` (model tab). Ignores `req.storage` — Internal tab stays empty vs stock.
+- `SUB_FILE` thumbnails — timelapses: sidecar `.jpg` over FTPS; `.3mf`: download archive, parse central directory, `inflate` plate PNG with zlib.
+- `FILE_DOWNLOAD` — streaming `RETR` with 256 KB `CONTINUE` chunks.
+- `FILE_DEL` — `DELE` per path.
+- `TASK_CANCEL` — marks a sequence number; worker aborts at next checkpoint.
 
 `FILE_UPLOAD` is **not** implemented here: Send to Printer uses the separate `ft_*` ABI in `libbambu_networking.so` (§6.14).
 
 **`ipcam.file` in MQTT `push_status`:**
 
 - Firmware that **does** send `ipcam.file` (typical X1 / P1S class): the networking plugin passes it through untouched — we avoid advertising a capability string we don't match exactly against stock BambuSource behaviour.
-- Firmware that **does not** advertise `ipcam.file` (P2S, A-series, some revisions): the plugin injects `"file":{"local":"local","remote":"none","model_download":"enabled"}` into every LAN `ipcam` block so Studio opens the port-6000 tunnel; without it, MediaFilePanel would short-circuit with "Browsing file in storage is not supported in current firmware."
+- Firmware that **does not** advertise `ipcam.file` (P2S, A-series, some revisions): the plugin injects `"file":{"local":"local","remote":"none","model_download":"enabled"}` into every LAN `ipcam` block so Studio opens the file-browser tunnel; without it, MediaFilePanel would short-circuit with "Browsing file in storage is not supported in current firmware." The panel opens, but **Internal** tab content still requires stock's :6000 wire.
 
 ### File browser (CTRL bridge)
 
-The CTRL bridge serves Studio's "Device → Files" tab over the same camera tunnel (TLS/6000) by switching it into JSON-RPC mode via `Bambu_StartStreamEx(CTRL_TYPE = 0x3001)`. Each command is mapped onto one or more FTPS operations on TCP/990 (the FTPS connection is opened by the plugin, transparent to Studio).
+The CTRL bridge serves Studio's "Device → Files" tab. Stock forwards CTRL over **TLS :6000** to firmware; our workaround handles JSON in-process and uses **FTPS :990** for external USB only ([§7.5.1](NETWORK_PLUGIN.md#751-where-the-printer-side-bytes-actually-come-from)).
 
 | `cmdtype` | Status | Notes |
 | --- | :--: | --- |
-| `LIST_INFO` (0x0001) | ✨ (tested on P2S) | FTPS `LIST <prefix>/<storage>`; `prefix` is auto-detected per firmware (sdcard/usb/root). |
-| `SUB_FILE` (0x0002) | ✨ (tested on P2S) | FTPS `RETR` of the requested entry; for `Metadata/plate_*.png` thumbnails the whole `.3mf` is fetched into memory and the entry is `inflate`d with zlib. |
-| `FILE_DEL` (0x0003) | ✨ (tested on P2S) | FTPS `DELE` per path. |
-| `FILE_DOWNLOAD` (0x0004) | ✨ (tested on P2S) | Streaming FTPS `RETR` with 256 KB `CONTINUE` chunks. |
-| `FILE_UPLOAD` (0x0005) | ❌ | Not implemented; Studio does uploads through the `ft_*` ABI instead. |
-| `REQUEST_MEDIA_ABILITY` (0x0007) | ✨ (tested on P2S) | Static answer derived from FTPS storage probing (`sdcard` advertised when probing succeeds, with the right `home_flag`). |
+| `LIST_INFO` (0x0001) | ✨ (P2S, **external USB only**) | FTPS `LIST <prefix>/<subtree>`; ignores `req.storage=="internal"`. |
+| `SUB_FILE` (0x0002) | ✨ (P2S, external USB only) | FTPS `RETR`; `.3mf` plate PNG via in-memory ZIP parse + zlib. |
+| `FILE_DEL` (0x0003) | ✨ (P2S, external USB only) | FTPS `DELE` per path. |
+| `FILE_DOWNLOAD` (0x0004) | ✨ (P2S, external USB only) | Streaming FTPS `RETR` with 256 KB `CONTINUE` chunks. |
+| `FILE_UPLOAD` (0x0005) | ❌ | Not implemented; Studio uses `ft_*` ABI instead. |
+| `REQUEST_MEDIA_ABILITY` (0x0007) | ✨ (P2S, USB mounted) | Answer from FTPS storage probe; empty FTPS session when no USB. |
+| **`req.storage == "internal"`** | ❌ | Stock :6000 only; not served by FTPS bridge. |
 | `TASK_CANCEL` (0x1000) | ✅ | Cancels the in-flight request on the worker. |
 | `LIST_CHANGE_NOTIFY` (0x0100) | ✅ | Re-emits `LIST_INFO` toward Studio. |
 | `LIST_RESYNC_NOTIFY` (0x0101) | ✅ | Forces a full re-fetch. |

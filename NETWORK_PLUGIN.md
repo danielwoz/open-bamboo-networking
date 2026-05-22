@@ -526,12 +526,12 @@ The plugin must tolerate this exact order (in particular, no networking work sho
 
 Studio ships **two PEM files** next to each other under `<resources>/cert/` inside the AppImage / install tree:
 
-| File | What it is (observed) | Used by the **open** plugin today |
-|------|------------------------|-----------------------------------|
-| **`slicer_base64.cer`** | BBL / RapidSSL-style bundle for **Bambu cloud** hostnames (`*.bambulab.com`, MakerWorld HTTPS, etc.). This is the file Studio **names** in the ABI call. | **LAN: no.** **Linux cloud MQTT/HTTPS: no** (system CA store). **Windows cloud MQTT only:** passed to Mosquitto as a PEM file because static OpenSSL has no default trust dir — with `tls_skip_chain_verify` (MVP workaround; see `agent.cpp` `connect_cloud`). **Future:** proper Windows cloud TLS verify may use this file or another anchor. |
-| **`printer.cer`** | BBL **CA** bundle (root + intermediate CAs such as `BBL CA`, `BBL CA2 RSA/ECC`). **Not** the printer's device leaf. Observed **5** CA certs in Studio v02.07.0.55; **does not** include per-model device issuers such as `BBL Device CA N7-V2`. | **LAN TLS verify:** loaded as `OBN_LAN_TLS_CA_FILE` for MQTT (8883), FTPS (990), RTSPS (322), MJPEG (6000). Same folder is remembered from `set_cert_file(folder, …)`; the **filename argument is ignored** for LAN — we always open `folder/printer.cer`. |
+| File | What it is (observed) | Role (reverse-engineered / observed) |
+|------|------------------------|--------------------------------------|
+| **`slicer_base64.cer`** | BBL / RapidSSL-style bundle for **Bambu cloud** hostnames (`*.bambulab.com`, MakerWorld HTTPS, etc.). This is the file Studio **names** in the ABI call. | Passed to stock plugin via `set_cert_file`; stock almost certainly uses it for **cloud** TLS. Not referenced for LAN printer TLS in Studio's public sources. |
+| **`printer.cer`** | BBL **CA** bundle (root + intermediate CAs such as `BBL CA`, `BBL CA2 RSA/ECC`). **Not** the printer's device leaf. Observed **5** CA certs in Studio v02.07.0.55; **does not** include per-model device issuers such as `BBL Device CA N7-V2`. | Shipped alongside `slicer_base64.cer` under `<resources>/cert/`. Stock closed-source plugin behaviour for LAN trust is **not** observable from Studio source alone; see LAN observations below. |
 
-**Why Studio passes `slicer_base64.cer` in the API if we ignore it on LAN:** the stock closed-source plugin uses that second argument as its cloud trust bundle. The ABI is fixed; Studio always calls `set_cert_file(resources_dir()+"/cert", "slicer_base64.cer")`. We store `folder` + `filename` for ABI compatibility and for the Windows cloud path above.
+**Why Studio passes `slicer_base64.cer` in the API:** the stock closed-source plugin uses that second argument as its cloud trust bundle. The ABI is fixed; Studio always calls `set_cert_file(resources_dir()+"/cert", "slicer_base64.cer")`.
 
 **LAN TLS — what the printer sends (verified on P2S, firmware 02.07.x):**
 
@@ -540,14 +540,7 @@ Studio ships **two PEM files** next to each other under `<resources>/cert/` insi
 - Leaf **issuer** on N7/P2S: `CN=BBL Device CA N7-V2` (other models may use other `BBL Device CA …` names).
 - **`printer.cer` alone does not chain-verify** that leaf on N7/P2S — the issuer CA is missing from the Studio bundle (confirmed with `openssl s_client` / `openssl verify`).
 
-**How LAN verify actually works in the open plugin:**
-
-1. Load **`printer.cer`** into the OpenSSL trust store (best-effort; needed when/if the issuer **is** present in a future Studio bundle or on other models).
-2. After `install_device_cert`, also load the **snapshotted leaf** from `<config_dir>/certs/<serial>.pem` (env `OBN_LAN_TLS_PEER_<a_b_c_d>`). The snapshot is taken once per session over MQTT :8883 with verify disabled purely to capture the PEM. With `X509_V_FLAG_PARTIAL_CHAIN`, trusting that leaf PEM makes “this exact cert is OK” work even when the intermediate CA is not shipped.
-3. Check **CN = serial** after the handshake (`X509_check_host` / Mosquitto hostname hook).
-4. Escape hatch: `OBN_SKIP_TLS_VERIFY=1` disables LAN verify (debug only).
-
-**Plain-language summary:** `slicer_base64.cer` = **cloud** (mostly unused on Linux today). `printer.cer` = **intended LAN CA pack** from Bambu, but on current N7 firmware the signing CA is **not** in that pack, so we also **pin the device leaf** we snapshot locally. That is weaker than full PKI to a public root, but it still detects a **wrong/random** cert on the wire (MITM must present the same leaf or break CN=serial).
+**Stock plugin LAN TLS policy:** not reverse-engineered from the closed binary. Any LAN client must cope with leaf-only chains and CN=serial hostname checks as observed above.
 
 ### 6.2. Callbacks (registration)
 
@@ -1498,7 +1491,7 @@ The trailing query parameters (`device`, `net_ver`, `dev_ver`, `cli_id`, `cli_ve
 
 #### 7.3.2. File browser
 
-Built in `PrinterFileSystem::Reconnect` via `MediaFilePanel`. The format is identical to the MJPEG-camera URL (`bambu:///local/<ip>.?port=6000&user=<u>&passwd=<p>&...`) — same TLS port, same auth packet — but Studio immediately follows `Bambu_Open` with `Bambu_StartStreamEx(tunnel, 0x3001)` to switch the tunnel into CTRL / JSON-RPC mode (§7.5). On printers that lack `StartStreamEx` (older firmwares), Studio falls back to `Bambu_StartStream(tunnel, false)` (`PrinterFileSystem.cpp:1739`).
+Built in `PrinterFileSystem::Reconnect` via `MediaFilePanel`. Studio uses the same **URL shape** as the MJPEG camera (`bambu:///local/<ip>.?port=6000&user=<u>&passwd=<p>&...`) — same TCP port — but stock `libBambuSource` instantiates **`BambuTunnelLocal`** for LAN file browsing, **not** the MJPEG 80-byte auth path from [`video.md`](../3rd_party/OpenBambuAPI/video.md). After `Bambu_Open` (TLS only) Studio calls `Bambu_StartStreamEx(tunnel, 0x3001)`, which runs a multi-step wire handshake (§7.5.1.1) before any `LIST_INFO` JSON appears on the wire. On printers that lack `StartStreamEx` (older firmwares), Studio falls back to `Bambu_StartStream(tunnel, false)` (`PrinterFileSystem.cpp:1739`).
 
 ### 7.4. Per-platform camera back-end (the critical part)
 
@@ -1513,7 +1506,7 @@ So the matrix is now:
 | **BambuStudio** post `94d91be60` (≈ v01.10+ / current `v02.06.x`) | `wxMediaCtrl3` → `Bambu_*` C ABI → `AVVideoDecoder` (FFmpeg) → wxWindow | **same**: `wxMediaCtrl3` → `Bambu_*` C ABI → `AVVideoDecoder` → wxWindow | `wxMediaCtrl2.mm` → Objective-C `BambuPlayer` class via `dlsym` |
 | **BambuStudio** pre-`94d91be60` and **OrcaSlicer (current)** | `wxMediaCtrl2` → `gstbambusrc` (statically linked into Studio) → `bambulib_get()` → `Bambu_*` C ABI | `wxMediaCtrl2` → `wxMediaCtrl::Load(wxURI("bambu:..."))` → wxWidgets DirectShow backend → COM source filter (CLSID `{233E64FB-…}`) inside `BambuSource.dll` | `wxMediaCtrl2.mm` → Objective-C `BambuPlayer` |
 
-Practical consequences for `libBambuSource` implementers:
+Observed requirements from Studio source (camera back-end):
 
 - A portable C-ABI implementation of `libBambuSource` covers **all three platforms** when the user runs current BambuStudio. The Windows DirectShow filter is no longer on the hot path.
 - For OrcaSlicer (and any pre-`94d91be60` Studio install) the Windows DirectShow filter is still required: without `CLSID {233E64FB-…}` registered against the `bambu:` URL scheme, Orca cannot play the camera at all and falls into the "BambuSource has not correctly been registered" dialog.
@@ -1594,13 +1587,12 @@ Concretely:
 - The actual filter must implement `IBaseFilter` + `IFileSourceFilter` and produce video samples on its output pin.
 - For Orca / legacy Studio, the C ABI from §7.2 is **not used** for camera output — it is exclusively the file browser path. The DirectShow filter is a separate code path inside the same DLL.
 
-Practical consequence (Orca / legacy Studio only): a portable C-ABI implementation of `libBambuSource` covers the *file-browser* feature on Windows for free, but the camera live view requires a separate DirectShow source filter — a substantial extra engineering effort.
+Practical consequence (Orca / legacy Studio only): stock `BambuSource.dll` must expose a DirectShow source filter registered against `bambu:` for camera playback; the C ABI alone covers the file browser on Windows.
 
-This project ships such a filter ([stubs/dshow_filter.cpp](stubs/dshow_filter.cpp), exports gated through [stubs/BambuSource.def](stubs/BambuSource.def)). It implements `IBaseFilter` + `IFileSourceFilter` + a single output `IPin`, accepts the downstream-provided `IMemAllocator`, and pushes either Annex-B H.264 (RTSPS, port 322) or framed MJPEG (port 6000) into the renderer. Self-registration writes both `HKCR\CLSID\{233E64FB-…}` and `HKCR\bambu\Source Filter` exactly as wxMediaCtrl2 expects; `regsvr32 /s BambuSource.dll` is the only setup step. Three Windows-specific pitfalls were encountered during the port and are worth recording, since each one cost meaningful debugging time:
+Stock filter internals are closed source. Studio-side contract inferred from `wxMediaCtrl2` / wxWidgets (Orca / legacy Studio):
 
-1. **`setvbuf(fp, NULL, _IOLBF, 0)` is undefined behaviour on the MSVC CRT.** The MSVC CRT's `_setvbuf_internal` enforces "if buffer is `NULL`, the only accepted mode is `_IONBF` (size 0)" via `_invalid_parameter` → `__fastfail(FAST_FAIL_INVALID_ARG)` → `STATUS_STACK_BUFFER_OVERRUN (0xC0000409)`. The same call is silently accepted on glibc/musl. Cross-platform code that wants line-buffering-equivalent behaviour on log files must either supply a real buffer or fall back to `_IONBF` and let each `fprintf` flush.
-2. **`wxURI` normalises `bambu:///rtsps___…` to `bambu://rtsps___…`** before calling `IFileSourceFilter::Load`. The triple-slash form is what `MediaPlayCtrl::load()` produces (no host, path = `/rtsps___user:pwd@ip/...`), but wxURI's "authority is empty" canonicaliser interprets `rtsps___user:pwd` as userinfo and `ip` as host, then re-emits the URI with a single `//`. A parser keyed strictly off `bambu:///rtsps___` will reject every Orca camera URL with `E_INVALIDARG`. Accept any number of `/` characters after `bambu:` (1, 2, or 3).
-3. **The source must push samples while the graph is in `Paused`, not just `Running`.** wmp/wxMediaCtrl keeps the filter graph in `State_Paused` until the renderer receives its first sample (which is what triggers the transition to `State_Running`). A worker thread that gates `IMemInputPin::Receive` on `parent->state() == State_Running` deadlocks the graph: the renderer waits for the first sample, the source waits for `Running`, the user sees an infinite "playing" indicator with a black frame, and the RTSP server eventually disconnects on TCP back-pressure. Standard DirectShow pattern is to commit the allocator in the `Pause()` transition and start streaming immediately; downstream filters apply any reference-clock pacing themselves.
+1. **`wxURI` normalises `bambu:///rtsps___…` to `bambu://rtsps___…`** before calling `IFileSourceFilter::Load`. The triple-slash form is what `MediaPlayCtrl::load()` produces (no host, path = `/rtsps___user:pwd@ip/...`), but wxURI's "authority is empty" canonicaliser interprets `rtsps___user:pwd` as userinfo and `ip` as host, then re-emits the URI with a single `//`. A parser keyed strictly off `bambu:///rtsps___` will reject every Orca camera URL with `E_INVALIDARG`. Accept any number of `/` characters after `bambu:` (1, 2, or 3).
+2. **DirectShow graphs stay in `Paused` until the first sample arrives.** wxMediaCtrl2 / wmp keeps the filter graph in `State_Paused` until the renderer receives its first sample (which triggers the transition to `State_Running`). A source filter that gates `IMemInputPin::Receive` on `State_Running` deadlocks playback.
 
 #### 7.4.3. macOS: Objective-C `BambuPlayer` class inside the dylib
 
@@ -1672,9 +1664,9 @@ Cross-references in the BambuStudio tree:
 - `src/slic3r/GUI/AVVideoDecoder.{cpp,h}` — wraps FFmpeg's `avcodec_send_packet` / `avcodec_receive_frame` and hands the raw planes back as a wxBitmap or wxImage.
 - `src/slic3r/GUI/MediaPlayCtrl.cpp:49` — the constructor takes `wxMediaCtrl3 *media_ctrl`, replacing the old `wxMediaCtrl2 *` from earlier revisions.
 
-What this means for the libBambuSource ABI: on **current Windows BambuStudio** the camera now reaches the plugin through exactly the same C-ABI surface as Linux. The Windows-only logger expects `wchar_t const*` strings (the `tchar` typedef in `BambuTunnel.h`), so a portable plugin has to convert UTF-8 → UTF-16 for the logger callback — but otherwise the Linux build is bit-for-bit appropriate as long as the plugin is built as a `.dll` with a matching MSVC ABI.
+On **current Windows BambuStudio** the camera reaches `libBambuSource` through the same C-ABI surface as Linux. The Windows logger callback expects `wchar_t const*` strings (the `tchar` typedef in `BambuTunnel.h`); POSIX builds use `char const*` (UTF-8).
 
-Studio's `wxMediaCtrl3` does **not** consult the registry, does **not** call `CoCreateInstance`, and does **not** require the DirectShow filter to be registered. A Windows install where `BambuSource.dll` exports the `Bambu_*` C ABI but is **not** registered as a DirectShow filter will produce a perfectly functional camera in current BambuStudio, while OrcaSlicer on the same machine will fail to play any camera until the DLL is registered (`regsvr32 /s BambuSource.dll`). This is why a port of `libBambuSource` should ship both: the C ABI for current Studio + Linux + macOS file browser, and the DirectShow filter for OrcaSlicer + legacy Studio installs.
+Studio's `wxMediaCtrl3` does **not** consult the registry, does **not** call `CoCreateInstance`, and does **not** require the DirectShow filter to be registered. On Windows, current BambuStudio uses only the `Bambu_*` C ABI for camera playback; OrcaSlicer and pre-`94d91be60` Studio still require the DirectShow filter to be registered (`regsvr32 /s BambuSource.dll`). Stock `BambuSource.dll` is therefore expected to export both surfaces on Windows.
 
 #### 7.4.5. Recap
 
@@ -1691,11 +1683,13 @@ In every case the file-browser path uses **only** the `Bambu_*` C ABI plus the C
 
 ### 7.5. CTRL mode (file-browser RPC over the camera tunnel)
 
-When Studio opens a file browser, it goes through exactly the same `Bambu_Create` / `Bambu_Open` path as the camera, then "rotates" the tunnel by calling `Bambu_StartStreamEx(tunnel, CTRL_TYPE = 0x3001)`:
+When Studio opens a file browser, it uses the same `Bambu_Create` / `Bambu_Open` URL as the LAN camera, then calls `Bambu_StartStreamEx(tunnel, CTRL_TYPE = 0x3001)`:
 
 ```32:32:3rd_party/OrcaSlicer/src/slic3r/GUI/Printer/PrinterFileSystem.h
     static const int CTRL_TYPE     = 0x3001;
 ```
+
+On LAN, stock `libBambuSource` routes this through **`BambuTunnelLocal`** (`createBambuTunnelLocal` in the plugin binary): `Bambu_Open` is TLS connect only; `Bambu_StartStreamEx(0x3001)` sends the subchannel login + `mtype` 12291 setup frames documented in §7.5.1.1. Only after that handshake completes does the tunnel accept framed CTRL JSON (`mtype` 12289) for `LIST_INFO` / `SUB_FILE` / …
 
 ```1738:1750:3rd_party/OrcaSlicer/src/slic3r/GUI/Printer/PrinterFileSystem.cpp
                 do{
@@ -1720,21 +1714,108 @@ Both run on a dedicated worker thread inside `PrinterFileSystem::Reconnect` / `R
 
 #### 7.5.1. Where the printer-side bytes actually come from
 
-On the wire there are **two** TCP sockets in play, even though Studio only ever opens one. The CTRL tunnel is just an RPC bus; the actual file data lives on a separate FTPS connection that the *plugin* is responsible for opening:
+From Studio's perspective the file browser is JSON over the `Bambu_*` ABI (`Bambu_SendMessage` / `Bambu_ReadSample`). **Stock `libBambuSource`** forwards that traffic to printer firmware over a long-lived **TLS :6000** socket (`BambuTunnelLocal` + `LocalTunnel_*` + `tutk_third_SSL_*` inside the plugin):
 
 | Channel | Endpoint | Direction | Carries |
 |---------|----------|-----------|---------|
-| CTRL tunnel | TLS over TCP/**6000** (the same socket Studio opened with `Bambu_Create` / `Bambu_Open`) | Studio ↔ plugin | JSON requests/responses + optional inline blobs (thumbnails) |
-| FTPS data plane | implicit FTPS over TCP/**990** (opened *by the plugin*, not by Studio) | plugin ↔ printer | `LIST` / `RETR` / `STOR` / `DELE`, i.e. the actual file metadata and bulk bytes |
+| CTRL / file data | TLS over TCP/**6000** (opened by `Bambu_Open`, kept open) | PC ↔ printer firmware | Subchannel-framed bytes (§7.5.1.1): login, `StartStreamEx` setup, then JSON RPC + optional binary blobs |
 
-In other words: Studio does not know there is an FTPS connection. From its point of view the entire file-browser feature is "send a JSON request on the camera tunnel, get a JSON response back". The plugin maps each CTRL command onto one or more FTPS operations and then synthesises a response.
+**Evidence (P2S, May 2026).** LAN capture while using stock Studio Device → Files (Wireshark filter `ip.addr==<printer> && tcp.port != 8883`):
 
-This split has consequences:
+- **External** tab (empty list): small request/response exchange on :6000 only.
+- **Internal** tab (timelapse list + JPEG previews): ~66 KiB server→client on :6000 only.
+- **Zero packets on FTPS :990** during the same session.
 
-- The plugin must keep the FTPS connection alive across CTRL requests (Bambu firmwares idle-close it after ~5 minutes — a reconnect-on-stale retry on the next request is the simplest fix).
-- The plugin must probe the FTPS layout once per session (§7.6.1) because different printer firmwares expose storage either as `/sdcard`, `/usb`, or as the FTPS root itself.
+Payload on :6000 is TLS application data (opaque in Wireshark unless decrypted). The **on-wire framing** is documented in §7.5.1.1 (reverse-engineered May 2026 from stock `libBambuSource.so` + live probes against P2S).
 
-#### 7.5.2. Wire format: `Bambu_SendMessage` payload
+**Multiple clients.** Unlike an earlier working assumption, the printer **does allow several simultaneous TLS :6000 sessions** (verified with two independent REPL connections while Studio also had Files open). There is no exclusive lock on the port.
+
+**Do not conflate with FTPS :990.** The printer's implicit FTPS service (§7.6.3) is used for LAN print uploads and the `ft_*` FileTransfer ABI. On P2S it is **not** involved in stock Device → Files traffic (see also §7.6.1.1 for what FTPS exports on that model).
+
+**Do not conflate with MJPEG auth.** The 80-byte `0x3000` auth block in [`video.md`](../3rd_party/OpenBambuAPI/video.md) applies to **MJPEG live view on A1 / P1 / P1P** (`BambuTunnelLocal` is still used on some paths, but the camera stream uses different post-auth bytes). Sending that 80-byte packet on a P2S file-browser session yields a 24-byte `0x0003013f` ack and the peer closes — it is the wrong handshake.
+
+Internal timelapse **recording** during print (`task_timelapse_use_internal` → MQTT `project_file` `"cfg":"4"`) is handled by **`libbambu_networking`**, not the file-browser CTRL path documented here.
+
+#### 7.5.1.1. LAN wire protocol (`BambuTunnelLocal`, reverse-engineered May 2026)
+
+Stock LAN file browser traffic (verified on **P2S**; likely shared across models that use `bambu:///local/...:6000` for Files) uses **`BambuTunnelLocal`** inside `libBambuSource.so`, not the cloud TUTK UID path (`BambuTunnelTutk` / `IOTC_Connect_ByUIDEx`).
+
+**Stack:**
+
+```text
+TCP :6000
+  └─ TLS (tutk_third_SSL_connect — OpenSSL wrapper inside libBambuSource)
+       └─ subchannel 0x01  login
+       └─ subchannel 0x02  StartStreamEx setup + all CTRL JSON / binary
+```
+
+**Common frame header** (16 bytes, little-endian, sent as its own `tutk_third_SSL_write` followed by a second write for the payload when `payload_len > 0`):
+
+| Offset | Field | Notes |
+|--------|-------|-------|
+| 0–3 | `payload_len` | Byte length of payload **following** this header (may be `0`) |
+| 4–7 | `magic` | `0xNNMM013f` — see table below (`NN` = subchannel, byte at offset 6; byte at offset 7 = direction) |
+| 8–11 | `seq` | Monotonic per-session counter (stock seeds from `rand()` in `BambuTunnelLocal::open`) |
+| 12–15 | reserved | `0` |
+
+**Magic values observed:**
+
+| Value (LE u32) | Direction | Subchannel | Purpose |
+|----------------|-----------|------------|---------|
+| `0x0101013f` | client → printer | `0x01` | Login |
+| `0x0001013f` | printer → client | `0x01` | Login ack (typically 4 zero bytes) |
+| `0x0102013f` | client → printer | `0x02` | CTRL setup + RPC |
+| `0x0002013f` | printer → client | `0x02` | CTRL replies / streaming data |
+
+Byte at offset **7** of the magic distinguishes client (`0x01`) vs server (`0x00`) frames. Subchannel is byte at offset **6** (`0x01` login, `0x02` CTRL).
+
+**Session bootstrap** (matches `BambuTunnelLocal::start(0x3001)` in stock `libBambuSource.so`):
+
+1. **`Bambu_Open`** — `LocalTunnel_Open`: TCP connect + TLS handshake. **No** 80-byte `0x3000` auth on this path.
+
+2. **Subchannel `0x01` login** — header (`payload_len = 16`, magic `0x0101013f`) + 16-byte payload:
+   - bytes 0–7: username, ASCII, NUL-padded (Studio sends `"bblp"`)
+   - bytes 8–15: LAN access code, ASCII, NUL-padded (8 chars from printer screen)
+
+3. **Subchannel `0x02` `StartStreamEx` setup** — one JSON object (stock `snprintf` format in the plugin), sent with magic `0x0102013f`:
+
+```json
+{"sequence":0,"mtype":12291,"req":{"t_av":1,"mtype":12289,"peer_t":3,"pid":"<clientId>","ver":"<cli_ver>"}}
+```
+
+   - Outer `mtype` **12291** = `0x3003` (setup)
+   - Inner `req.mtype` **12289** = `0x3001` (= Studio's `CTRL_TYPE`)
+   - `pid` / `ver` come from URL query params `cli_id` / `cli_ver` when present; stock falls back to an 8-char id derived from the session counter
+
+   Printer replies with a short JSON ack, e.g. `{"mtype":12291,"sequence":0,"result":0,"reply":{}}`.
+
+4. **Subchannel `0x02` RPC** — each `Bambu_SendMessage` JSON body is wrapped for the wire as:
+
+```json
+{"mtype":12289,"cmdtype":1,"sequence":1,"req":{...}}
+```
+
+   i.e. the Studio-side object from §7.5.2 gains a leading `"mtype":12289,` (+14 bytes) before framing. Large replies (e.g. `SUB_FILE` thumbnails) append `\n\n` + binary **inside the payload** after the JSON; stock `Bambu_ReadSample` returns the combined buffer to Studio unchanged.
+
+**Frida / packet-capture caveat.** Hooking `tutk_third_SSL_write` **after** Device → Files is already open shows **only step 4** (16-byte header + ~100–200 B JSON). Steps 1–3 happen during `Bambu_Open` / `Bambu_StartStreamEx` before browsing; attach early or use `tools/bambu6000_repl.py` to capture the full handshake.
+
+**RE tools in this repo:**
+
+| Tool | Role |
+|------|------|
+| [`tools/bambu6000_repl.py`](../tools/bambu6000_repl.py) | Interactive TLS :6000 client; performs login + `mtype` 12291 setup; auto-framed JSON lines |
+| [`tools/tutk_ssl_log.js`](../tools/tutk_ssl_log.js) + [`tools/frida_tutk_attach.sh`](../tools/frida_tutk_attach.sh) | Frida hooks on stock `libBambuSource.so` (`Bambu_SendMessage`, `Bambu_ReadSample`, `tutk_third_SSL_*`) |
+
+**Example `LIST_INFO` round-trip** (External timelapse, after handshake):
+
+```text
+C→P  hdr(101, 0x0102013f) + {"mtype":12289,"cmdtype":1,"sequence":1,"req":{"api_version":2,"notify":"DETAIL","type":"timelapse"}}
+P→C  hdr(310, 0x0002013f) + {"cmdtype":1,"mtype":12289,"reply":{"file_lists":[...]},"result":0,"sequence":1}
+```
+
+#### 7.5.2. ABI / Studio-side JSON: `Bambu_SendMessage` payload
+
+This is the JSON **inside** `libBambuSource` before the plugin adds `"mtype":12289` and the §7.5.1.1 frame header for the LAN wire.
 
 The serialiser is in `PrinterFileSystem::SendRequest` (`src/slic3r/GUI/Printer/PrinterFileSystem.cpp:1431-1458`):
 
@@ -1774,7 +1855,7 @@ Notes:
 - `sequence` is a monotonically increasing per-tunnel counter; the plugin echoes it in every response so Studio can match callbacks to requests.
 - The optional `\n\n<param>` tail carries an inline binary blob. In practice Studio uses this only for the file-upload command; on the response side the plugin uses the same `\n\n<binary>` convention to deliver thumbnail bytes to Studio.
 
-#### 7.5.3. Response wire format
+#### 7.5.3. ABI / Studio-side JSON: response envelope
 
 The plugin returns each response as a `Bambu_Sample` whose `buffer` is the same `json\n\n[blob]` envelope. Studio's parser is `PrinterFileSystem::HandleResponse` (`PrinterFileSystem.cpp:1598+`):
 
@@ -1833,44 +1914,56 @@ The full set of `cmdtype` values is in `PrinterFileSystem.h:34-45`:
 
 Per-command request shape (the `req` object — line numbers for the assemblers in `PrinterFileSystem.cpp`):
 
-| Cmd | Hex | Origin | `req` fields | Plugin maps to |
-|-----|----:|--------|--------------|----------------|
-| `LIST_INFO` | `0x0001` | `BuildFileList` (`...:160-175`) | `{ notify, type, storage }` (`type` ∈ {`timelapse`,`video`,`model`}) | FTPS `LIST <prefix>/<storage>` |
-| `SUB_FILE` | `0x0002` | thumbnail / partial fetch (`...:500-540`) | `{ path, name, offset, size, ... }` | FTPS `RETR <path>` (range emulated by reading first N bytes) |
-| `FILE_DEL` | `0x0003` | `DeleteFiles` (`...:776-799`) | `{ paths: [...] }` or `{ path, file }` | FTPS `DELE` for each `<prefix>/<path>` |
-| `FILE_DOWNLOAD` | `0x0004` | `DownloadFiles` (`...:811-829`) | `{ path, file }` (or `mem:/<idx>` for in-memory thumbnails) | FTPS `RETR <prefix>/<path>` |
-| `FILE_UPLOAD` | `0x0005` | `UploadFile` (`...:1258-1280`) | `{ path, file, size, md5, ... }` + binary param | FTPS `STOR <prefix>/<path>` |
-| `REQUEST_MEDIA_ABILITY` | `0x0007` | media abilities probe (`...:1228-1240`) | `{}` | static answer (printer capabilities) |
-| `TASK_CANCEL` | `0x1000` | `CancelRequests` (`...:1469-1483`) | `{ tasks: [seq, seq, ...] }` | per-job cancellation inside the worker |
+| Cmd | Hex | Origin | `req` fields | Stock plugin maps to |
+|-----|----:|--------|--------------|----------------------|
+| `LIST_INFO` | `0x0001` | `BuildFileList` (`...:160-175`) | `{ notify, type, storage }` (`type` ∈ {`timelapse`,`video`,`model`}) | :6000 firmware wire; honours `storage` (Internal vs External) |
+| `SUB_FILE` | `0x0002` | thumbnail / partial fetch (`...:500-540`) | `{ path, name, offset, size, ... }` | :6000 firmware wire |
+| `FILE_DEL` | `0x0003` | `DeleteFiles` (`...:776-799`) | `{ paths: [...] }` or `{ path, file }` | :6000 firmware wire |
+| `FILE_DOWNLOAD` | `0x0004` | `DownloadFiles` (`...:811-829`) | `{ path, file }` (or `mem:/<idx>` for in-memory thumbnails) | :6000 firmware wire |
+| `FILE_UPLOAD` | `0x0005` | `UploadFile` (`...:1258-1280`) | `{ path, file, size, md5, ... }` + binary param | :6000 firmware wire (Studio also has the separate `ft_*` upload path in `libbambu_networking`) |
+| `REQUEST_MEDIA_ABILITY` | `0x0007` | media abilities probe (`...:1228-1240`) | `{}` | static answer from stock plugin / firmware |
+| `TASK_CANCEL` | `0x1000` | `CancelRequests` (`...:1469-1483`) | `{ tasks: [seq, seq, ...] }` | cancel in-flight work on the :6000 session |
 | `LIST_CHANGE_NOTIFY` | `0x0100` | printer-initiated | "the file list changed, please refresh" | re-emits `LIST_INFO` to Studio |
 | `LIST_RESYNC_NOTIFY` | `0x0101` | printer-initiated | "the printer reset its file index" | full re-fetch |
 
-#### 7.6.1. Storage-prefix probing
+On P2S, stock file-browser bytes stay on :6000 only (§7.5.1); wire framing in §7.5.1.1.
 
-Studio's CTRL requests address files by **logical storage label** (`storage` field on `LIST_INFO`, `path` field on the others). The labels Studio knows about are `sdcard` and `usb`. The actual filesystem layout the plugin sees over FTPS depends on the printer/firmware:
+#### 7.6.1. Storage selection (`req.storage`)
 
-- `LIST /sdcard`.
-- `LIST /usb`.
-- `LIST /` that directly targets external disk drive
+Studio's `LIST_INFO` requests carry a **`storage`** field when the printer reports internal timelapse support (`is_support_internal_timelapse` from MQTT `print.fun`):
 
-The plugin does the mapping. The standard recipe is to probe once per session (`CWD /sdcard`, `CWD /usb`, then `CWD /` as a fallback) and remember the resolved prefix on the tunnel; every subsequent request from Studio is rewritten as `<ftp_prefix>/<path-from-request>`. The observed prefixes per firmware family are:
+| `req.storage` | Studio UI tab | Stock behaviour (P2S, inferred) |
+|---------------|---------------|----------------------------------|
+| absent or `""` | **External** | :6000 wire → external volume (USB when mounted) |
+| `"internal"` | **Internal** (eMMC timelapses) | :6000 wire → internal volume |
 
-| Printer family | FTPS layout | `storage` label Studio sends | Effective FTPS path |
-|---|---|---|---|
-| X1 / P1 / A-series with microSD | `/sdcard/`, sometimes `/usb/` if a stick is plugged in | `sdcard` | `/sdcard/<path>` |
-| P2S (USB-only, no SD slot) | FTPS root *is* the USB stick — neither `/sdcard` nor `/usb` exists | `sdcard` (Studio still sends this label so the radio reads "External Storage") | `/<path>` (no prefix) |
-| H-series / X2D | USB only, layout per upstream model enum (probe to confirm) | `sdcard` | `/<path>` |
+Older Studio builds also used logical labels **`sdcard`** / **`usb`** in `REQUEST_MEDIA_ABILITY` replies and some `LIST_INFO` requests.
 
-#### 7.6.2. The tunnel keeps Studio and FTPS sequenced
+#### 7.6.1.1. Observed FTPS filesystem layout (LAN probe)
 
-There are no concurrent CTRL requests on the same tunnel: `PrinterFileSystem::RunRequests` serialises everything on the worker thread, holding `m_mutex` between `Bambu_SendMessage` and the matching `Bambu_ReadSample`. This means the plugin can serve requests strictly sequentially without worrying about interleaved FTPS commands on its side.
+FTPS :990 on the printer is a separate service from the stock file browser (§7.5.1). Layout below is from direct `CWD`/`LIST` probes against the printer's FTPS daemon — relevant for LAN print upload and `ft_*` traffic, not for stock Device → Files on P2S.
+
+**P2S (May 2026):**
+
+| USB state | FTPS root (`LIST /`) | `/timelapse` | eMMC / internal paths (`/emmc`, `/internal`, …) |
+|-----------|----------------------|--------------|--------------------------------------------------|
+| USB inserted | USB stick contents | exists (often empty) | `CWD` → `550` |
+| USB removed | **0 entries** | `CWD` → `550` | `CWD` → `550` |
+
+Internal timelapse files visible in stock Studio's **Internal** tab are **not** reachable through this FTPS view on P2S.
+
+FTPS storage layout on other printer families has **not** been probed for this document.
+
+#### 7.6.2. The tunnel keeps Studio requests sequenced
+
+There are no concurrent CTRL requests on the same tunnel: `PrinterFileSystem::RunRequests` serialises everything on the worker thread, holding `m_mutex` between `Bambu_SendMessage` and the matching `Bambu_ReadSample`. Stock `libBambuSource` forwards each request/response pair over its single :6000 socket in that order.
 
 #### 7.6.3. FTPS dialect quirks
 
-Bambu firmware ships a stripped-down vsftpd / busybox-ftpd hybrid (the exact image varies across O1S / X1 / P1 / P2S / A-series) that deviates from RFC 959 / 4217 in several ways. None of these quirks are documented anywhere in the stock plugin or Studio source, so a fresh implementation needs to know all of them up front:
+Bambu firmware ships a stripped-down vsftpd / busybox-ftpd hybrid (the exact image varies across O1S / X1 / P1 / P2S / A-series) that deviates from RFC 959 / 4217 in several ways. None of these quirks appear in Studio source; the list below is from LAN probes against printer firmware:
 
 - **Implicit TLS, TCP/990.** The TLS handshake starts immediately after the TCP `connect()`; there is no `AUTH TLS` upgrade dance. A plaintext FTP client that opens 990 and waits for a `220` banner gets nothing — the server is already in TLS mode.
-- **Device cert CN = serial, no SAN.** The leaf certificate uses `CN=<serial>` (e.g. `22E8BJ610801473`) with **no** DNS/IP SAN entries. Clients connect by LAN IP but must verify hostname against the serial. On observed N7/P2S firmware the printer sends **only that leaf** in TLS; issuer is `BBL Device CA N7-V2`, which is **not** present in Studio's `printer.cer` bundle (v02.07) — see §6.1.1. The open plugin loads `printer.cer` plus an optional **snapshotted leaf** (`install_device_cert` → `<config_dir>/certs/<serial>.pem`, env `OBN_LAN_TLS_PEER_<ip>`) and checks CN=serial on LAN MQTT (8883), FTPS (990), RTSPS (322), and MJPEG (6000). Set env `OBN_SKIP_TLS_VERIFY=1` to disable verify for debugging. **Stock plugin LAN TLS policy is unknown** — do not assume it skips verification.
+- **Device cert CN = serial, no SAN.** The leaf certificate uses `CN=<serial>` (e.g. `22E8BJ610801473`) with **no** DNS/IP SAN entries. Clients connect by LAN IP but must verify hostname against the serial. On observed N7/P2S firmware the printer sends **only that leaf** in TLS; issuer is `BBL Device CA N7-V2`, which is **not** present in Studio's `printer.cer` bundle (v02.07) — see §6.1.1. **Stock plugin LAN TLS policy is unknown** — do not assume it skips verification.
 - **Login is `USER bblp` + `PASS <printer-access-code>`.** The 8-character code shown on the printer screen is the FTPS password. There is no anonymous mode, and no other usernames are accepted.
 - **Mandatory post-login sequence.** After `230` the client *must* issue `TYPE I` → `PBSZ 0` → `PROT P` in that order before any data-channel command. Skipping `PROT P` (or sending it before `PBSZ`) makes the next `PASV` reply `425`/`431` depending on firmware.
 - **PASV only — `PORT` is not implemented.** The daemon either ignores `PORT` outright or replies `500 Unknown command`. Active mode is not negotiable.
@@ -1934,7 +2027,7 @@ A few practical contracts that the Studio code path enforces but does not docume
 
 1. **Sanity entry point for debugging**: immediately after `create_agent` Studio makes the exact sequence of calls documented in § 6.1 ("Initialization sequence"). Observing those in order is the shortest way to confirm that the ABI is wired correctly.
 2. `QueueOnMainFn` is critical: nearly every UI-touching callback must be dispatched through this lambda — wxWidgets is not thread-safe, and direct calls from the plugin's worker threads will race.
-3. **Certificate files (`set_cert_file`)** — full detail in §6.1.1. Short version: Studio passes `(<resources>/cert, slicer_base64.cer)`. The open plugin uses **`printer.cer`** from that folder for LAN (`OBN_LAN_TLS_CA_FILE`) and **`slicer_base64.cer`** only on **Windows cloud MQTT** (OpenSSL has no system store in our static build). **`slicer_base64.cer` is not used for LAN.** BambuSource reads `OBN_LAN_TLS_CA_FILE`, per-IP serial env vars, and optional `OBN_LAN_TLS_PEER_<ip>` (snapshotted device leaf).
+3. **Certificate files (`set_cert_file`)** — full detail in §6.1.1. Studio passes `(<resources>/cert, slicer_base64.cer)`; both `slicer_base64.cer` (cloud) and `printer.cer` (BBL CA bundle) live in that folder. Stock plugin LAN trust behaviour is not documented here beyond the printer-side TLS observations in §6.1.1.
 4. **ABI/STL compatibility** is the single biggest foot-gun of this contract: the plugin has to be built with the exact same toolchain that built Bambu Studio (matching MSVC runtime on Windows, matching libstdc++ ABI on Linux, matching Xcode/libc++ on macOS). Any mismatch is undefined behaviour the moment a `std::string` / `std::map` crosses the library boundary.
 
 ---
@@ -1989,4 +2082,4 @@ Key facts about the stock Bambu Network Plugin, distilled from the sections abov
 - **ABI surface**: roughly 100 `bambu_network_*` entry points using C linkage but `std::string` / `std::vector` / `std::map` / `std::function` at the boundary — tightly coupled to Studio's libstdc++/libc++ ABI — plus a separate, pure-C `ft_*` tunnel/job bus (`ft_abi_version() == 1`) that ships in the same `.so`/`.dll`.
 - **Initialization contract**: a deterministic call sequence `create_agent → set_config_dir → init_log → set_cert_file → set_extra_http_header → set_on_*_fn(…) → set_country_code → start → start_discovery` (`GUI_App::on_init_network`), with `QueueOnMainFn` as the only safe way back to the GUI thread.
 - **Notable Studio quirks observed during reverse engineering**: the `bambu_network_get_user_nickanme` symbol name is misspelled in the real ABI, and Studio mistakenly resolves `get_my_token` through the string `"bambu_network_get_my_profile"` — a compatible plugin must export both, with matching signatures.
-- **Second library, second contract**: camera live view and the on-printer file browser go through a *separate* library `libBambuSource` (different symbol prefix `Bambu_*`, different loader, no signature gate, no version gate). It exposes a small C ABI (`Bambu_Create` / `Bambu_Open` / `Bambu_StartStreamEx` / `Bambu_SendMessage` / `Bambu_ReadSample` / …) plus, on macOS only, an Objective-C class `BambuPlayer` resolved through `dlsym(libBambuSource.dylib, "OBJC_CLASS_$_BambuPlayer")` inside `wxMediaCtrl2.mm`. The camera widget that consumes this ABI varies by slicer: current BambuStudio (commit `94d91be60`+, June 2024) uses `wxMediaCtrl3` which calls `Bambu_*` directly and decodes via FFmpeg on **both** Linux and Windows; OrcaSlicer and pre-`94d91be60` Studio still use the older `wxMediaCtrl2` which routes Linux through the `gstbambusrc` GStreamer element baked into the Studio binary and Windows through a DirectShow source filter registered against the `bambu:` URI scheme (CLSID `{233E64FB-…}`) — meaning a Windows `BambuSource.dll` aimed at Orca compatibility must additionally export the COM filter, while a Studio-only port can stick to the C ABI. The file browser uses the same camera tunnel (TLS over TCP/6000) but switches it into JSON-RPC mode via `Bambu_StartStreamEx(tunnel, CTRL_TYPE = 0x3001)`; the actual file bytes travel over a *separate* implicit-FTPS connection on TCP/990 that the plugin opens itself. See **§7** for the full ABI, wire format and per-platform back-ends.
+- **Second library, second contract**: camera live view and the on-printer file browser go through a *separate* library `libBambuSource` (different symbol prefix `Bambu_*`, different loader, no signature gate, no version gate). It exposes a small C ABI (`Bambu_Create` / `Bambu_Open` / `Bambu_StartStreamEx` / `Bambu_SendMessage` / `Bambu_ReadSample` / …) plus, on macOS only, an Objective-C class `BambuPlayer` resolved through `dlsym(libBambuSource.dylib, "OBJC_CLASS_$_BambuPlayer")` inside `wxMediaCtrl2.mm`. The camera widget that consumes this ABI varies by slicer: current BambuStudio (commit `94d91be60`+, June 2024) uses `wxMediaCtrl3` which calls `Bambu_*` directly and decodes via FFmpeg on **both** Linux and Windows; OrcaSlicer and pre-`94d91be60` Studio still use the older `wxMediaCtrl2` which routes Linux through the `gstbambusrc` GStreamer element baked into the Studio binary and Windows through a DirectShow source filter registered against the `bambu:` URI scheme (CLSID `{233E64FB-…}`). The file browser uses the same camera tunnel (TLS over TCP/6000) but switches it into JSON-RPC mode via `Bambu_StartStreamEx(tunnel, CTRL_TYPE = 0x3001)`; **stock Device → Files traffic on P2S stays on that :6000 socket** for lists, thumbnails, and downloads (§7.5.1). FTPS on TCP/990 is a separate printer service (§7.6.3) used for LAN print uploads and the `ft_*` ABI — not for stock file browsing on P2S. See **§7** for the full ABI, wire format and per-platform back-ends.
