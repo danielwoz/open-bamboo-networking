@@ -2008,6 +2008,7 @@ Hermetic naming logic (no printer): [`tests/remote_name_test.cpp`](../tests/remo
 | [`tools/probe_remote_naming.sh`](../tools/probe_remote_naming.sh) | Matrix of `project_name` values → stock/open STOR name via `send_gcode_to_sdcard` / `local_print` |
 | [`tools/plugin_runner.sh`](../tools/plugin_runner.sh) | Load any cached/CDN `libbambu_networking.so` and drive print ABIs with JSON `PrintParams` |
 | [`tools/bambu_ftp_proxy.py`](../tools/bambu_ftp_proxy.py) | Plain FTP ↔ printer FTPS bridge (debug clients that cannot speak implicit TLS :990) |
+| [`tools/bambu6000_ftp_proxy.py`](../tools/bambu6000_ftp_proxy.py) | Plain FTP ↔ `:6000` file browser (USB + internal/eMMC on P2S; default `127.0.0.1:2122`) |
 | [`tools/check_abi_compat.sh`](../tools/check_abi_compat.sh) | Diff `PrintParams` / symbol exports against [`tools/abi_snapshot/`](../tools/abi_snapshot/) |
 
 Studio today passes **`m_project_name + ".gcode.3mf"`** for SendJob uploads (`SendJob.cpp:206`, since `46dc96fd` 2022-11); bare names on this ABI are mainly historical or headless callers.
@@ -2756,6 +2757,7 @@ Byte at offset **7** of the magic distinguishes client (`0x01`) vs server (`0x00
 | Tool | Role |
 |------|------|
 | [`tools/bambu6000_repl.py`](../tools/bambu6000_repl.py) | Interactive TLS :6000 client; performs login + `mtype` 12291 setup; auto-framed JSON lines; `/upload` uses chunked pipeline (§6.14.2) |
+| [`tools/bambu6000_ftp_proxy.py`](../tools/bambu6000_ftp_proxy.py) | Plain FTP ↔ `:6000` bridge (default `127.0.0.1:2122`); virtual `/external/*` and `/internal/*` trees map to `LIST_INFO` / `FILE_DOWNLOAD` / upload / delete |
 | [`tools/repl_upload_sweep.py`](../tools/repl_upload_sweep.py) | Batch regression: repeated pipeline uploads, optional delete, same-session stress |
 | [`tools/upload_experiments.py`](../tools/upload_experiments.py) | Matrix of upload wire variants (one-shot, per-chunk ACK, md5/separator permutations) |
 | [`tools/tutk_ssl_log.js`](../tools/tutk_ssl_log.js) + [`tools/frida_tutk_attach.sh`](../tools/frida_tutk_attach.sh) | Frida hooks on stock `libBambuSource.so` (`Bambu_SendMessage`, `Bambu_ReadSample`, `tutk_third_SSL_*`) |
