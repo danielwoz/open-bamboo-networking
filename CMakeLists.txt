@@ -79,6 +79,18 @@ _obn_byte_to_hex2(${_obn_b2} _obn_h2)
 set(OBN_ABI_VERSION_HEX "0x${_obn_h0}${_obn_h1}${_obn_h2}")
 message(STATUS "obn: ABI_VERSION=${OBN_ABI_VERSION_HEX} (from OBN_VERSION=${OBN_VERSION})")
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ObnGitInfo.cmake")
+obn_detect_git_info(OBN_GIT_COMMIT OBN_GIT_DIRTY)
+if(OBN_GIT_COMMIT)
+    if(OBN_GIT_DIRTY)
+        message(STATUS "obn: git commit=${OBN_GIT_COMMIT} (dirty)")
+    else()
+        message(STATUS "obn: git commit=${OBN_GIT_COMMIT}")
+    endif()
+else()
+    message(STATUS "obn: git commit unavailable (git not found or not a checkout)")
+endif()
+
 # Per-client install settings: file name of the .so, OTA manifest layout,
 # which conf file the post-install patch script targets, recommended
 # default prefix, etc. Populates OBN_CLIENT_* variables in this scope.
@@ -270,6 +282,7 @@ add_library(bambu_networking SHARED
     src/lan_session.cpp
     src/lan_tls.cpp
     src/log.cpp
+    src/plugin_load_banner.cpp
     src/mqtt_client.cpp
     src/os_compat.cpp
     src/print_job.cpp
@@ -282,10 +295,19 @@ add_library(bambu_networking SHARED
 )
 
 target_include_directories(bambu_networking PRIVATE include)
+set(_obn_git_compile_defs "")
+if(OBN_GIT_COMMIT)
+    list(APPEND _obn_git_compile_defs OBN_GIT_COMMIT="${OBN_GIT_COMMIT}")
+    if(OBN_GIT_DIRTY)
+        list(APPEND _obn_git_compile_defs OBN_GIT_DIRTY=1)
+    endif()
+endif()
+
 target_compile_definitions(bambu_networking PRIVATE
     OBN_VERSION_STRING="${OBN_VERSION}"
     ABI_VERSION=${OBN_ABI_VERSION_HEX}
     OBN_ENABLE_WORKAROUNDS=$<BOOL:${OBN_ENABLE_WORKAROUNDS}>
+    ${_obn_git_compile_defs}
 )
 target_link_libraries(bambu_networking PRIVATE
     obn_mosquitto_iface

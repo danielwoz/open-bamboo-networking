@@ -1008,6 +1008,461 @@ Right before `project_file` Studio runs a preflight against the printer's storag
 
 The printer answers on the same channel with `result`, `is_enough`, `file_count`; Studio reads them in `DeviceManager.cpp:3548-3553` and either proceeds with `on_send_print()` or shows the "free up storage" dialog. From the plugin's perspective the frame is opaque — it is neither parsed nor formatted plugin-side, only forwarded byte-for-byte by the generic `send_message*` ABI calls.
 
+#### 6.8.4. MQTT AMS and pressure-advance (PA) calibration commands
+
+These commands are **not implemented in the network plugin** — Studio builds the JSON and sends it through the generic `bambu_network_send_message` / `bambu_network_send_message_to_printer` ABI calls; the plugin forwards the frame byte-for-byte. The formats below are reconstructed from Bambu Studio source (`DeviceManager.cpp`, `DevCalib.cpp`, `DevFilaSystemCtrl.cpp`). They share the same transport as `project_file` (§6.8.2): publish to `device/<dev_id>/request` on LAN MQTT (or the cloud forwarder), with all command fields nested under a top-level `"print"` object.
+
+**Common request envelope**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `print.command` | string | Command name (see tables below) |
+| `print.sequence_id` | string | Monotonic counter (`MachineObject::m_sequence_id++`) |
+
+**Common response envelope**
+
+The printer answers on the status/report channel inside the same `"print"` wrapper. Studio matches replies by `print.command` in `DeviceManager.cpp:2707-3513` and dispatches to `DevCalib::ParseV1_0()` or AMS parsers.
+
+| Field | When present | Meaning |
+|-------|--------------|---------|
+| `command` | always | Echoes the command name |
+| `sequence_id` | usually | Echoes the request |
+| `result` | on failure | `"fail"` — paired with `reason` |
+| `reason` | on failure | Human-readable cause (e.g. `"invalid nozzle_diameter"`, `"generate auto filament cali gcode failure"`) |
+| `err_code` | sometimes | Numeric error code; Studio shows a dialog when present |
+| `errno` | some AMS cmds | Negative int (e.g. `-2` chamber too hot, `-4` AMS too hot during filament change) |
+
+**Tray / slot indexing**
+
+Studio encodes AMS slots as a flat `tray_id`:
+
+```
+tray_id = ams_id * 4 + slot_id     (standard AMS; ams_id < 16)
+```
+
+Virtual external spools use fixed ids: `255` = main external spool, `254` = deputy external spool (`DevDefs.h`). On unload via `ams_change_filament`, Studio sends `target: 255` and `slot_id: 255`.
+
+**Nozzle identifiers**
+
+Multi-extruder / new-auto-calibration paths carry:
+
+| Field | Format | Example |
+|-------|--------|---------|
+| `nozzle_diameter` | string | `"0.2"`, `"0.4"`, `"0.6"`, `"0.8"` |
+| `nozzle_id` | string | `"HS00-0.4"` — second char is volume type (`S` standard, `H` high-flow, `U` TPU high-flow) |
+| `nozzle_pos` | int | Physical nozzle rack position (optional) |
+| `nozzle_sn` | string | Nozzle serial (optional, paired with `nozzle_pos`) |
+
+---
+
+##### Pressure advance (PA) calibration — `extrusion_cali_*`
+
+Studio uses the `extrusion_cali_*` family for **pressure advance (K factor)** calibration and for managing PA profiles persisted on the printer. Related flow-ratio calibration uses the parallel `flowrate_*` commands (see end of this section).
+
+**Terminology (Studio is inconsistent here):** the same `PACalibResult` struct appears in two different lifecycles:
+
+| Concept | MQTT command | Studio API | Meaning |
+|---------|--------------|------------|---------|
+| **Run output** | `extrusion_cali_get_result` | `GetPAResult()`, `m_pa_calib_results` | Fresh K/N values from the calibration job that just finished; not yet committed to printer storage until `extrusion_cali_set`. |
+| **Stored profiles** | `extrusion_cali_get` | `GetPAHistory()`, `m_pa_calib_tab`, UI *Calibration History* | K/N profiles already saved on the printer for a `(filament_id, nozzle, …)` key. Multiple slots per key, indexed by `cali_idx`; one is active per tray (`extrusion_cali_sel`). |
+
+`extrusion_cali_del` removes one **stored profile slot** (`cali_idx`), not the ephemeral run output — even though Studio names the caller `delete_PA_calib_result()` (`CalibUtils.cpp:736`).
+
+**`extrusion_cali`** — start a PA calibration run
+
+Two code paths in `DeviceManager.cpp`:
+
+*Legacy single-tray* (`command_start_extrusion_cali`, ~1679):
+
+```json
+{
+  "print": {
+    "command": "extrusion_cali",
+    "sequence_id": "42",
+    "tray_id": 5,
+    "nozzle_temp": 220,
+    "bed_temp": 60,
+    "max_volumetric_speed": 15.0
+  }
+}
+```
+
+*Multi-filament wizard* (`command_start_pa_calibration`, ~1823):
+
+```json
+{
+  "print": {
+    "command": "extrusion_cali",
+    "sequence_id": "43",
+    "nozzle_diameter": "0.4",
+    "mode": 0,
+    "filaments": [
+      {
+        "tray_id": 5,
+        "extruder_id": 0,
+        "bed_temp": 60,
+        "filament_id": "GFA00",
+        "setting_id": "GFL99",
+        "nozzle_temp": 220,
+        "ams_id": 1,
+        "slot_id": 1,
+        "nozzle_id": "HS00-0.4",
+        "nozzle_diameter": "0.4",
+        "max_volumetric_speed": "15"
+      }
+    ]
+  }
+}
+```
+
+**Response:** `{ "command": "extrusion_cali", "result": "success" }` or `{ "result": "fail", "reason": "…" }`. On success the printer runs the calibration gcode; progress is visible through ordinary `push_status` fields, not through this ack.
+
+**`extrusion_cali_set`** — write K/N coefficients to printer storage
+
+*Legacy single-tray* (`command_extrusion_cali_set`, ~1708):
+
+```json
+{
+  "print": {
+    "command": "extrusion_cali_set",
+    "sequence_id": "44",
+    "tray_id": 5,
+    "k_value": 0.04,
+    "n_coef": 1.4,
+    "bed_temp": 60,
+    "nozzle_temp": 220,
+    "max_volumetric_speed": 15.0
+  }
+}
+```
+
+Note: the legacy path hard-codes `n_coef` to `1.4` regardless of the UI value.
+
+*Batch save after wizard* (`command_set_pa_calibration`, ~1864):
+
+```json
+{
+  "print": {
+    "command": "extrusion_cali_set",
+    "sequence_id": "45",
+    "nozzle_diameter": "0.4",
+    "filaments": [
+      {
+        "tray_id": 5,
+        "extruder_id": 0,
+        "nozzle_id": "HS00-0.4",
+        "nozzle_diameter": "0.4",
+        "ams_id": 1,
+        "slot_id": 1,
+        "filament_id": "GFA00",
+        "setting_id": "GFL99",
+        "name": "Bambu PLA Basic",
+        "k_value": "0.040",
+        "n_coef": "0.0",
+        "cali_idx": 2,
+        "nozzle_pos": 0,
+        "nozzle_sn": "SN123"
+      }
+    ]
+  }
+}
+```
+
+For auto-calibration saves, `n_coef` carries the measured value; for manual saves Studio sends `"0.0"`.
+
+**Response:** echoes `tray_id`, `k_value`, and either `n_value` (virtual tray) or `n_coef` (AMS tray). Parsed in `DevCalib::ExtrusionCalibSetParse()` (~151).
+
+**`extrusion_cali_get`** — fetch the **stored PA profile table** for a filament/nozzle combination (`command_get_pa_calibration_tab`, ~1923; Studio: `RequestPAHistory()`):
+
+```json
+{
+  "print": {
+    "command": "extrusion_cali_get",
+    "sequence_id": "46",
+    "filament_id": "GFA00",
+    "extruder_id": 0,
+    "nozzle_id": "HS00-0.4",
+    "nozzle_diameter": "0.4",
+    "nozzle_pos": 0,
+    "nozzle_sn": "SN123"
+  }
+}
+```
+
+`extruder_id`, `nozzle_id`, `nozzle_pos`, and `nozzle_sn` are omitted when not applicable.
+
+**Response:** `filaments` array of stored profile entries. Each element deserialises into `PACalibResult` (`DevCalib.cpp:54-70`):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `tray_id` | int | Flat tray index |
+| `ams_id`, `slot_id` | int | AMS coordinates |
+| `extruder_id` | int | |
+| `nozzle_id` | string | e.g. `"HS00-0.4"` |
+| `nozzle_diameter` | string or number | Top-level `nozzle_diameter` copied in when missing per entry |
+| `nozzle_pos`, `nozzle_sn` | int / string | Optional |
+| `filament_id`, `setting_id`, `name` | string | |
+| `k_value`, `n_coef` | string or number | Entries with `k_value` outside `[0, 10]` are discarded |
+| `cali_idx` | int | Slot index within the stored profile table (-1 = default) |
+| `confidence` | int | `0` success, `1` uncertain, `2` failed |
+
+On failure: `{ "result": "fail", "reason": "…" }`. Parsed in `DevCalib::ExtrusionCalibGetTableParse()` (~206).
+
+**`extrusion_cali_get_result`** — fetch **latest calibration run results** (`command_get_pa_calibration_result`, ~1944):
+
+```json
+{
+  "print": {
+    "command": "extrusion_cali_get_result",
+    "sequence_id": "47",
+    "nozzle_diameter": "0.4"
+  }
+}
+```
+
+**Response:** same `filaments[]` schema as `extrusion_cali_get`. On new-auto-calibration firmware, Studio rewrites `tray_id` from `ams_id`/`slot_id` via `GetTrayIdByAmsSlotId()`. Parsed in `DevCalib::ExtrusionCalibGetResultParse()` (~243).
+
+**`extrusion_cali_sel`** — mark which stored profile (`cali_idx`) is active for a tray (`commnad_select_pa_calibration`, ~1954):
+
+```json
+{
+  "print": {
+    "command": "extrusion_cali_sel",
+    "sequence_id": "48",
+    "tray_id": 5,
+    "ams_id": 1,
+    "slot_id": 1,
+    "cali_idx": 2,
+    "filament_id": "GFA00",
+    "nozzle_diameter": "0.4",
+    "nozzle_pos": 0,
+    "nozzle_sn": "SN123"
+  }
+}
+```
+
+**Response:** echoes `tray_id`, `ams_id`, `slot_id`, `cali_idx`. Parsed in `DevCalib::ExtrusionCalibSelectParse()` (~174).
+
+**`extrusion_cali_del`** — delete one stored profile slot (`command_delete_pa_calibration`, ~1905; Studio: `delete_PA_calib_result()`):
+
+```json
+{
+  "print": {
+    "command": "extrusion_cali_del",
+    "sequence_id": "49",
+    "extruder_id": 0,
+    "nozzle_id": "HS00-0.4",
+    "filament_id": "GFA00",
+    "cali_idx": 2,
+    "nozzle_diameter": "0.4",
+    "nozzle_pos": 0,
+    "nozzle_sn": "SN123"
+  }
+}
+```
+
+---
+
+##### Flow ratio calibration — `flowrate_*`
+
+Parallel to PA, Studio drives flow-ratio calibration with:
+
+| Command | Request keys | Response |
+|---------|--------------|----------|
+| `flowrate_cali` | `nozzle_diameter`, `tray_id`, `filaments[]` with `tray_id`, `bed_temp`, `filament_id`, `setting_id`, `nozzle_temp`, `def_flow_ratio`, `max_volumetric_speed`, `extruder_id`, `ams_id`, `slot_id` | `result` / `reason` (same pattern as `extrusion_cali`) |
+| `flowrate_get_result` | `nozzle_diameter` | `filaments[]` with `tray_id`, `nozzle_diameter`, `filament_id`, `setting_id`, `flow_ratio`, `confidence` |
+
+Built in `command_start_flow_ratio_calibration()` (~1973) and `command_get_flow_ratio_calibration_result()` (~2017); responses parsed in `DevCalib::FlowrateGetResultParse()` (~282).
+
+---
+
+##### AMS control commands
+
+All AMS MQTT commands use the same `"print"` envelope. Studio also has legacy **G-code fallbacks** for some operations (`M620 C/R/P` via `publish_gcode()`).
+
+**`ams_change_filament`** — load or unload filament (`command_ams_change_filament`, ~1537)
+
+Load:
+
+```json
+{
+  "print": {
+    "command": "ams_change_filament",
+    "sequence_id": "50",
+    "curr_temp": 210,
+    "tar_temp": 220,
+    "ams_id": 1,
+    "target": 5,
+    "slot_id": 1,
+    "extruder_id": 0
+  }
+}
+```
+
+`target` is the flat `tray_id` (`ams_id * 4 + slot_id`), or the raw `ams_id` when `tray_id == 0`. `extruder_id` is optional (multi-extruder).
+
+Unload:
+
+```json
+{
+  "print": {
+    "command": "ams_change_filament",
+    "sequence_id": "51",
+    "curr_temp": 220,
+    "tar_temp": 210,
+    "ams_id": 1,
+    "target": 255,
+    "slot_id": 255
+  }
+}
+```
+
+**Response:** may include `errno` (negative) and `soft_temp` when chamber/AMS temperature blocks the operation (`DeviceManager.cpp:2860-2879`).
+
+**`ams_filament_setting`** — update tray metadata (`command_ams_filament_settings`, ~1602)
+
+```json
+{
+  "print": {
+    "command": "ams_filament_setting",
+    "sequence_id": "52",
+    "ams_id": 1,
+    "slot_id": 1,
+    "tray_id": 1,
+    "tray_info_idx": "GFA00",
+    "setting_id": "GFL99",
+    "tray_color": "FF112233",
+    "nozzle_temp_min": 190,
+    "nozzle_temp_max": 240,
+    "tray_type": "PLA"
+  }
+}
+```
+
+`tray_color` is RGBA hex without `#`. For virtual trays (`ams_id` 255/254), `tray_id` is set to `254` (`VIRTUAL_TRAY_DEPUTY_ID`).
+
+**Response:** echoes `ams_id`, `tray_id`, `tray_color`, `nozzle_temp_min`, `nozzle_temp_max`, `tray_info_idx`, `tray_type`. Studio updates its local AMS model from the ack (`DeviceManager.cpp:3459-3510`).
+
+**`ams_user_setting`** — global AMS RFID / remain-detection flags (`command_ams_user_settings`, ~1575)
+
+```json
+{
+  "print": {
+    "command": "ams_user_setting",
+    "sequence_id": "53",
+    "ams_id": -1,
+    "startup_read_option": true,
+    "tray_read_option": true,
+    "calibrate_remain_flag": false
+  }
+}
+```
+
+`ams_id: -1` means all AMS units. Updated flags appear in periodic `push_status` under `print.ams` as `insert_flag`, `power_on_flag`, `calibrate_remain_flag` (`DevFilaSystem.cpp:522-531`).
+
+**`ams_control`** — resume / abort / pause an in-progress AMS filament operation (`command_ams_control`, ~1656)
+
+```json
+{
+  "print": {
+    "command": "ams_control",
+    "sequence_id": "54",
+    "param": "resume"
+  }
+}
+```
+
+Valid `param` values: `"resume"`, `"reset"`, `"pause"`, `"done"`, `"abort"`.
+
+**`ams_get_rfid`** — trigger RFID read for one slot (`command_ams_refresh_rfid2`, ~1638)
+
+```json
+{
+  "print": {
+    "command": "ams_get_rfid",
+    "sequence_id": "55",
+    "ams_id": 1,
+    "slot_id": 2
+  }
+}
+```
+
+Legacy path uses G-code `M620 R<tray_id>` instead. RFID progress is tracked via `tray_reading_bits` / `tray_read_done_bits` in `push_status.ams`.
+
+**`ams_filament_drying`** — start or stop AMS drying (`DevFilaSystemCtrl.cpp`)
+
+Start (timed mode):
+
+```json
+{
+  "print": {
+    "command": "ams_filament_drying",
+    "sequence_id": "56",
+    "ams_id": 0,
+    "mode": 1,
+    "filament": "PLA",
+    "temp": 45,
+    "duration": 4,
+    "humidity": 0,
+    "rotate_tray": true,
+    "cooling_temp": 35,
+    "close_power_conflict": false
+  }
+}
+```
+
+Stop (`mode: 0`): same keys zeroed out. `mode` enum: `0` = Off, `1` = OnTime, `2` = OnHumidity (`DevFilaSystem.h:117-122`).
+
+**`auto_stop_ams_dry`** — emergency stop drying (`command_ams_drying_stop`, ~1671):
+
+```json
+{ "print": { "command": "auto_stop_ams_dry", "sequence_id": "57" } }
+```
+
+**`ams_reset`** — reset AMS state machine (`DevFilaSystemCtrl.cpp:11`):
+
+```json
+{ "print": { "command": "ams_reset", "sequence_id": "58" } }
+```
+
+**`print_option`** — AMS-related printer options (same command name as general print options, different keys)
+
+Auto-refill (`command_ams_switch_filament`, ~1751):
+
+```json
+{
+  "print": {
+    "command": "print_option",
+    "sequence_id": "59",
+    "auto_switch_filament": true
+  }
+}
+```
+
+Air-print detection (`command_ams_air_print_detect`, ~1765):
+
+```json
+{
+  "print": {
+    "command": "print_option",
+    "sequence_id": "60",
+    "air_print_detect": true
+  }
+}
+```
+
+**Legacy G-code AMS shortcuts** (still used on some code paths):
+
+| G-code | Purpose |
+|--------|---------|
+| `M620 C<ams_id>` | AMS calibration |
+| `M620 R<tray_id>` | RFID refresh (legacy) |
+| `M620 P<tray_id>` | Select tray (legacy) |
+
+---
+
+**Evidence:** Bambu Studio source only — no stock-plugin MITM capture for these commands. Cross-reference with `3rd_party/OpenBambuAPI/mqtt.md` for partial AMS documentation (missing the `extrusion_cali_*` family).
+
 ### 6.9. User presets
 
 | Symbol | Signature |
@@ -2537,6 +2992,11 @@ A few practical contracts that the Studio code path enforces but does not docume
 
 | Topic | File:lines |
 |-------|------------|
+| Timelapse storage preflight (`ipcam_get_media_info`) | `src/slic3r/GUI/DeviceManager.cpp:2067-2074, 3548-3553` |
+| PA calibration commands (`extrusion_cali_*`, `flowrate_*`) | `src/slic3r/GUI/DeviceManager.cpp:1679-2024`, `src/slic3r/GUI/DeviceCore/DevCalib.cpp:54-320` |
+| AMS MQTT commands (`ams_*`, `print_option`) | `src/slic3r/GUI/DeviceManager.cpp:1537-1775`, `src/slic3r/GUI/DeviceCore/DevFilaSystemCtrl.cpp:11-57` |
+| AMS status / tray indexing | `src/slic3r/GUI/DeviceCore/DevFilaSystem.cpp:344-385, 522-555` |
+| `PACalibResult` / `FlowRatioCalibResult` schemas | `src/libslic3r/Calib.hpp:114-181`, `src/slic3r/GUI/DeviceCore/DevCalib.cpp:54-80` |
 | Resolution of all 100+ symbols | `src/slic3r/Utils/NetworkAgent.cpp:279-382` |
 | API typedefs | `src/slic3r/Utils/NetworkAgent.hpp:10-115` |
 | Name constants | `src/slic3r/Utils/bambu_networking.hpp:97-100` |

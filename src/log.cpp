@@ -138,6 +138,49 @@ void configure_from_log_dir(const std::string& log_dir)
     path += "obn.log";
     open_file_locked(s, path);
     // Note: we do not log the switch here to avoid recursion.
+    emit_plugin_load_banner();
+}
+
+namespace {
+
+std::string plugin_load_banner_message()
+{
+    std::string msg = "Loaded Open Bamboo Networking plugin";
+#ifdef OBN_GIT_COMMIT
+    msg += ", commit #";
+    msg += OBN_GIT_COMMIT;
+#  ifdef OBN_GIT_DIRTY
+    msg += " (dirty)";
+#  endif
+#endif
+    return msg;
+}
+
+} // namespace
+
+void emit_plugin_load_banner()
+{
+    static std::once_flag stderr_once;
+    static bool         file_done = false;
+
+    const std::string msg = plugin_load_banner_message();
+
+    std::call_once(stderr_once, [&] {
+        std::fputs("[obn] ", stderr);
+        std::fputs(msg.c_str(), stderr);
+        std::fputc('\n', stderr);
+        std::fflush(stderr);
+    });
+
+    auto& s = state();
+    std::lock_guard<std::mutex> lk(s.mu);
+    ensure_initialized_locked(s);
+    if (file_done || !s.fp || s.fp == stderr) return;
+
+    std::fputs(msg.c_str(), s.fp);
+    std::fputc('\n', s.fp);
+    std::fflush(s.fp);
+    file_done = true;
 }
 
 Level threshold()
