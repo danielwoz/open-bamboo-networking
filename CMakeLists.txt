@@ -109,31 +109,14 @@ if(NOT CMAKE_CROSSCOMPILING
 endif()
 
 # When ON, the ft_* C ABI used by Studio's "Send to Printer" dialog and
-# the Print job's eMMC pre-flight speaks a real transport instead of
-# reporting an immediate I/O error. The transport is FTPS (same one we
-# use for LAN print uploads), not the proprietary port-6000 tunnel, so
-# only `bambu:///local/*` URLs are served; TUTK/Agora URLs still get
-# FT_EIO. With this OFF, every ft_* entry point is a polite-failure
-# stub and Studio falls back to its internal FTP path (our
-# start_send_gcode_to_sdcard / start_local_print entry points). Both
-# modes produce the same file in the same place on the printer; the
-# FTPS fastpath gives the more native dialog sequence (ability probe
-# / storage picker / percent progress).
-option(OBN_FT_FTPS_FASTPATH "Serve ft_* ABI calls over FTPS for LAN URLs" ON)
-
-# Toggles every non-stock behaviour in the plugin. With this ON the plugin
-# makes choices the original bambu_networking.so never would in order to
-# get Developer-Mode LAN printers (most notably the P2S, which has a USB
-# stick in place of an SD card) fully functional in Studio. With this
-# OFF the plugin stays a strict drop-in: the same MQTT/HTTP/FTPS/MJPEG
-# paths the stock plugin uses, and nothing else. Features that only exist
-# via a workaround disappear cleanly (no partial UI, no runtime errors):
-#   - push_status `home_flag` SDCARD-bits rewrite (P2S reports NO_SDCARD)
-#   - push_status `ipcam.file` block injection (unblocks MediaFilePanel on P2S)
-#   - `start_sdcard_print` routed over LAN MQTT instead of the cloud API
-#   - PrinterFileSystem CTRL bridge served from a worker thread over FTPS
-#     (stock speaks a proprietary port-6000 CTRL protocol)
-# See "What works" and "Workaround reference" in README.md.
+# the Print job's eMMC pre-flight speaks native BambuTunnelLocal (TLS :6000),
+# same as stock libbambu_networking.so.
+#
+# Non-stock paths gated by OBN_ENABLE_WORKAROUNDS (see README):
+#   - push_status home_flag / ipcam.file rewrites (Studio UI on P2S)
+#   - in-print Device-panel cover (get_subtask_info + cover_cache)
+#   - start_sdcard_print over LAN MQTT instead of signed cloud REST
+#   - libBambuSource FTPS CTRL fallback (OBN_CTRL_FTPS_FALLBACK=1 only)
 option(OBN_ENABLE_WORKAROUNDS "Enable non-stock workaround paths (see README)" ON)
 
 # When ON, 'cmake --install' (and therefore 'make install') will also
@@ -250,10 +233,8 @@ else()
     pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
     target_link_libraries(obn_curl_iface INTERFACE PkgConfig::CURL)
 endif()
-# zlib is shared between bambu_networking (cover_cache: unpacks
-# Metadata/plate_N.png out of /cache/<name>.3mf to show it as the
-# printing-task thumbnail) and BambuSource (same unpack, but for the
-# file browser).
+# zlib is shared between BambuSource (FTPS fallback: client-side ZIP
+# extract for file-browser thumbnails) and other zlib users in the tree.
 
 add_library(bambu_networking SHARED
     src/abi_meta.cpp
@@ -292,7 +273,11 @@ add_library(bambu_networking SHARED
     src/mqtt_client.cpp
     src/os_compat.cpp
     src/print_job.cpp
+    src/print_job_naming.cpp
     src/ssdp.cpp
+    src/tunnel_local.cpp
+    src/tunnel_upload.cpp
+    src/tls_dial.cpp
     src/zip_reader.cpp
 )
 
@@ -300,7 +285,6 @@ target_include_directories(bambu_networking PRIVATE include)
 target_compile_definitions(bambu_networking PRIVATE
     OBN_VERSION_STRING="${OBN_VERSION}"
     ABI_VERSION=${OBN_ABI_VERSION_HEX}
-    OBN_FT_FTPS_FASTPATH=$<BOOL:${OBN_FT_FTPS_FASTPATH}>
     OBN_ENABLE_WORKAROUNDS=$<BOOL:${OBN_ENABLE_WORKAROUNDS}>
 )
 target_link_libraries(bambu_networking PRIVATE
@@ -396,6 +380,8 @@ set(_obn_bambusource_sources
     stubs/rtsp_passthrough.cpp
     src/ftps.cpp
     src/json_lite.cpp
+    src/tunnel_local.cpp
+    src/tls_dial.cpp
     src/lan_tls.cpp
     src/log.cpp
     src/os_compat.cpp
@@ -657,6 +643,31 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     target_include_directories(ftps_parse_test PRIVATE include src)
     add_test(NAME ftps_parse COMMAND ftps_parse_test)
 
+    add_executable(remote_name_test tests/remote_name_test.cpp
+        src/print_job_naming.cpp)
+    target_include_directories(remote_name_test PRIVATE include)
+    target_compile_definitions(remote_name_test PRIVATE
+        ABI_VERSION=${OBN_ABI_VERSION_HEX})
+    add_test(NAME remote_name COMMAND remote_name_test)
+
+    add_executable(print_url_test tests/print_url_test.cpp
+        src/print_job_naming.cpp)
+    target_include_directories(print_url_test PRIVATE include)
+    target_compile_definitions(print_url_test PRIVATE
+        ABI_VERSION=${OBN_ABI_VERSION_HEX})
+    add_test(NAME print_url COMMAND print_url_test)
+
+    add_executable(tunnel_local_test tests/tunnel_local_test.cpp
+        src/tunnel_local.cpp
+        src/tls_dial.cpp
+        src/lan_tls.cpp
+        src/json_lite.cpp
+        src/log.cpp
+        src/os_compat.cpp)
+    target_include_directories(tunnel_local_test PRIVATE include stubs)
+    target_link_libraries(tunnel_local_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    add_test(NAME tunnel_local COMMAND tunnel_local_test)
+
     add_executable(lan_live_test tests/lan_live_test.cpp
         src/agent.cpp
         src/auth.cpp
@@ -676,6 +687,9 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
         src/print_params_ftp_prefs.cpp
         src/os_compat.cpp
         src/ssdp.cpp
+        src/tls_dial.cpp
+        src/tunnel_local.cpp
+        src/tunnel_upload.cpp
         src/zip_reader.cpp)
     target_include_directories(lan_live_test PRIVATE include)
     target_compile_definitions(lan_live_test PRIVATE

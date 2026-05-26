@@ -1,18 +1,38 @@
 'use strict';
 
 // Log stock libBambuSource traffic for Device -> Files RE.
+// Send to Printer (ft_*) is libbambu_networking.so — see tools/frida_ft_upload.js
 //
 // Primary hooks: Bambu_SendMessage / Bambu_ReadSample (JSON plaintext at ABI).
 // Secondary: tutk_third_SSL_* and TUTKSSL_* (wire encryption layer).
 //
-// Output: JSON/text as a single line; hexdump only for binary-only payloads
-// or trailing binary after JSON (e.g. thumbnail JPEG after SUB_FILE reply).
+// Payload data only: > bright red (C->P), < bright green (P->C). Tags and frame hdr stay plain.
 //
 // Attach: ./tools/frida_tutk_attach.sh
 
 const MOD_NAME = 'libBambuSource.so';
 const LOG_PATH = '/tmp/tutk_ssl.log';
 const MAX_HEX_CONSOLE = 2048;
+
+function globalExport(name) {
+  if (typeof Module.getGlobalExportByName === 'function') {
+    try {
+      return Module.getGlobalExportByName(name);
+    } catch (e) {
+      return null;
+    }
+  }
+  if (typeof Module.findExportByName === 'function') {
+    return Module.findExportByName(null, name);
+  }
+  return null;
+}
+
+const ANSI = {
+  reset: '\x1b[0m',
+  out: '\x1b[91m',  // bright red — client -> printer
+  in: '\x1b[92m',   // bright green — printer -> client
+};
 
 let logFile = null;
 const hooked = new Set();
@@ -30,6 +50,18 @@ function openLog() {
 
 function emit(line) {
   console.log(line);
+  writeLog(line);
+}
+
+function emitData(line, dir) {
+  const prefix = dir === 'out' ? '> ' : '< ';
+  const plain = prefix + line;
+  const color = dir === 'out' ? ANSI.out : ANSI.in;
+  console.log(color + plain + ANSI.reset);
+  writeLog(plain);
+}
+
+function writeLog(line) {
   openLog();
   if (logFile) {
     logFile.write(line + '\n');
@@ -94,30 +126,56 @@ function jsonPrefixEnd(data) {
   return -1;
 }
 
-function lstripWs(data) {
-  let i = 0;
-  while (i < data.length && (data[i] === 0x0a || data[i] === 0x0d ||
-         data[i] === 0x09 || data[i] === 0x20)) {
-    i++;
-  }
-  return data.subarray(i);
+
+const MAGIC_MARKER = 0x013f;
+
+function frameHeaderLabel(magic) {
+  const sub = (magic >>> 16) & 0xff;
+  const dir = (magic >>> 24) & 0xff;
+  let subName;
+  if (sub === 0x01) subName = 'LOGIN';
+  else if (sub === 0x02) subName = 'CTRL';
+  else subName = 'sub=0x' + sub.toString(16);
+  const dirName = dir === 0x01 ? 'C->P' : dir === 0x00 ? 'P->C' : 'dir=0x' + dir.toString(16);
+  return subName + ' ' + dirName;
 }
 
-function decodeUtf8(data) {
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(data);
-  } catch (_) {
-    return null;
-  }
+function isFrameHeader(data) {
+  return data.length === 16 && (readU32LE(data, 4) & 0xffff) === MAGIC_MARKER;
 }
 
-function isPrintableText(s) {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
+function hexU32(v) {
+  let s = v.toString(16);
+  while (s.length < 8) s = '0' + s;
+  return '0x' + s;
+}
+
+function formatFrameHeader(data) {
+  if (!isFrameHeader(data)) return null;
+  const pl = readU32LE(data, 0);
+  const magic = readU32LE(data, 4);
+  const seq = readU32LE(data, 8);
+  return (
+    'frame hdr: payload_len=' + pl + ' ' + frameHeaderLabel(magic) +
+    ' seq=' + hexU32(seq) + ' magic=' + hexU32(magic)
+  );
+}
+
+const utf8Decoder = new TextDecoder('utf-8', { fatal: false });
+
+function decodeUtf8Bytes(data) {
+  return utf8Decoder.decode(data);
+}
+
+function looksLikeUtf8Text(data) {
+  const text = decodeUtf8Bytes(data);
+  if (text.indexOf('\uFFFD') !== -1) return null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
     if (c === 0x0a || c === 0x0d || c === 0x09) continue;
-    if (c < 0x20 || c > 0x7e) return false;
+    if (c < 0x20) return null;
   }
-  return true;
+  return text;
 }
 
 function splitTextAndBinary(data) {
@@ -125,14 +183,24 @@ function splitTextAndBinary(data) {
 
   const jend = jsonPrefixEnd(data);
   if (jend > 0) {
-    const text = decodeUtf8(data.subarray(0, jend));
-    if (text !== null) {
-      return { text: text, binary: lstripWs(data.subarray(jend)) };
+    const text = decodeUtf8Bytes(data.subarray(0, jend));
+    let tailStart = jend;
+    // Studio envelope: json\n\n<binary blob>
+    if (jend + 1 < data.length && data[jend] === 0x0a && data[jend + 1] === 0x0a) {
+      tailStart = jend + 2;
+    } else {
+      tailStart = jend;
+      while (tailStart < data.length &&
+             (data[tailStart] === 0x0a || data[tailStart] === 0x0d ||
+              data[tailStart] === 0x09 || data[tailStart] === 0x20)) {
+        tailStart++;
+      }
     }
+    return { text: text, binary: data.subarray(tailStart) };
   }
 
-  const text = decodeUtf8(data);
-  if (text !== null && isPrintableText(text)) {
+  const text = looksLikeUtf8Text(data);
+  if (text !== null) {
     return { text: text, binary: new Uint8Array(0) };
   }
   return { text: null, binary: data };
@@ -167,33 +235,47 @@ function formatPayload(data, hexLimit) {
 }
 
 function formatBytes(data, hexLimit) {
+  const meta = [];
+  const payload = [];
+
+  if (data.length === 16) {
+    const hdr = formatFrameHeader(data);
+    if (hdr !== null) {
+      meta.push(hdr);
+      return { meta: meta, data: payload };
+    }
+  }
+
   const parsed = parseFrames(data);
-  const lines = [];
   if (parsed.frames.length) {
     parsed.frames.forEach(function (f) {
       formatPayload(f.body, hexLimit).forEach(function (line) {
-        lines.push(line);
+        payload.push(line);
       });
     });
     if (parsed.tail.length) {
       formatPayload(parsed.tail, hexLimit).forEach(function (line) {
-        lines.push(line);
+        payload.push(line);
       });
     }
   } else {
     formatPayload(data, hexLimit).forEach(function (line) {
-      lines.push(line);
+      payload.push(line);
     });
   }
-  return lines;
+  return { meta: meta, data: payload };
 }
 
-function logBytes(tag, ptr, len) {
+function logBytes(tag, ptr, len, dir) {
   const data = readBytes(ptr, len);
   if (!data) return;
   emit('[' + new Date().toISOString() + '] ' + tag + ' ' + len + ' bytes');
-  formatBytes(data, MAX_HEX_CONSOLE).forEach(function (line) {
+  const parts = formatBytes(data, MAX_HEX_CONSOLE);
+  parts.meta.forEach(function (line) {
     emit(line);
+  });
+  parts.data.forEach(function (line) {
+    emitData(line, dir);
   });
 }
 
@@ -219,7 +301,7 @@ function hookSslIo(mod) {
       hookExport(mod, name, {
         onEnter(args) {
           const len = args[2].toInt32();
-          if (len > 0) logBytes('SSL ' + name + ' C->P', args[1], len);
+          if (len > 0) logBytes('SSL ' + name + ' C->P', args[1], len, 'out');
         },
       });
     } else {
@@ -229,7 +311,7 @@ function hookSslIo(mod) {
         },
         onLeave(retval) {
           const n = retval.toInt32();
-          if (n > 0) logBytes('SSL ' + name + ' P->C', this.buf, n);
+          if (n > 0) logBytes('SSL ' + name + ' P->C', this.buf, n, 'in');
         },
       });
     }
@@ -243,7 +325,7 @@ function hookBambuAbi(mod) {
       const data = args[2];
       const len = args[3].toInt32();
       emit('[ABI] Bambu_SendMessage ctrl=0x' + ctrl.toString(16) + ' len=' + len);
-      if (len > 0) logBytes('ABI SendMessage', data, len);
+      if (len > 0) logBytes('ABI SendMessage', data, len, 'out');
     },
   });
 
@@ -259,7 +341,7 @@ function hookBambuAbi(mod) {
       const bufPtr = this.sample.add(16).readPointer();
       emit('[ABI] Bambu_ReadSample rc=' + rc + ' size=' + size);
       if (size > 0 && !bufPtr.isNull()) {
-        logBytes('ABI ReadSample', bufPtr, size);
+        logBytes('ABI ReadSample', bufPtr, size, 'in');
       }
     },
   });
@@ -294,7 +376,7 @@ function waitForModule() {
   if (installHooks()) return;
   emit('[*] waiting for ' + MOD_NAME + ' (open Device tab)...');
 
-  const dlopen = Module.findExportByName(null, 'dlopen');
+  const dlopen = globalExport('dlopen');
   if (dlopen) {
     Interceptor.attach(dlopen, {
       onLeave() {
