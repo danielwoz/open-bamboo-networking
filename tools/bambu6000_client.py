@@ -42,6 +42,7 @@ class FileEntry:
     size: int
     time: int = 0
     date: str = ""
+    storage: str = ""
 
 
 def build_mjpeg_auth_packet(username: str, password: str) -> bytes:
@@ -226,7 +227,7 @@ def _parse_file_entries(reply: dict[str, Any]) -> list[FileEntry]:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "")
-        path = str(item.get("path") or name)
+        path = str(item.get("path") or "")
         size = int(item.get("size") or 0)
         mtime = int(item.get("time") or 0)
         date = str(item.get("date") or "")
@@ -443,22 +444,42 @@ class LocalCtrlSession:
         for storage in storages:
             try:
                 entries = self.list_info(file_type, storage)
-                if entries or storage == storages[-1]:
-                    return entries
+                tagged = [
+                    FileEntry(
+                        e.name, e.path, e.size, e.time, e.date, storage=storage
+                    )
+                    for e in entries
+                ]
+                if tagged or storage == storages[-1]:
+                    return tagged
             except Printer6000Error as exc:
                 last_err = exc
         if last_err:
             raise last_err
         return []
 
-    def download_file(self, printer_path: str) -> bytes:
+    @staticmethod
+    def build_download_req(entry: FileEntry) -> dict[str, Any]:
+        """Match PrinterFileSystem::DownloadNextFile (path vs file)."""
+        if entry.path.startswith("/"):
+            return {"path": entry.path, "offset": 0}
+        return {"file": entry.name, "offset": 0}
+
+    @staticmethod
+    def build_delete_req(entry: FileEntry, storage: str = "") -> dict[str, Any]:
+        """Match PrinterFileSystem::DeleteFilesContinue (paths vs delete[])."""
+        if entry.path.startswith("/"):
+            return {"paths": [entry.path]}
+        req: dict[str, Any] = {"delete": [entry.name]}
+        if storage:
+            req["storage"] = storage
+        return req
+
+    def download_entry(self, entry: FileEntry) -> bytes:
+        req = self.build_download_req(entry)
         with self._sync_recv():
             seq = self._next_cmd_seq()
-            self.send_ctrl_json({
-                "cmdtype": 4,
-                "sequence": seq,
-                "req": {"path": printer_path, "offset": 0},
-            })
+            self.send_ctrl_json({"cmdtype": 4, "sequence": seq, "req": req})
             data = bytearray()
             md5 = hashlib.md5()
             while True:
@@ -487,6 +508,18 @@ class LocalCtrlSession:
                         )
                     return bytes(data)
                 raise Printer6000Error(f"download failed result={result}")
+
+    def delete_entry(self, entry: FileEntry, storage: str = "") -> None:
+        req = self.build_delete_req(entry, storage)
+        with self._sync_recv():
+            seq = self._next_cmd_seq()
+            self.send_ctrl_json({"cmdtype": 3, "sequence": seq, "req": req})
+            reply = self._pop_json_frame(30.0)
+            if reply is None:
+                raise Printer6000Error("delete: no reply")
+            result = reply.get("result")
+            if result not in (RESULT_OK, RESULT_CONTINUE, 19):
+                raise Printer6000Error(f"delete failed result={result}")
 
     def upload_bytes(self, data: bytes, storage: str, remote_name: str) -> None:
         with self._sync_recv():
@@ -558,6 +591,11 @@ class LocalCtrlSession:
             result = reply.get("result")
             if result not in (RESULT_OK, RESULT_CONTINUE, 19):
                 raise Printer6000Error(f"delete failed result={result}")
+
+    def download_file(self, printer_path: str) -> bytes:
+        return self.download_entry(
+            FileEntry(name=printer_path.rsplit("/", 1)[-1], path=printer_path, size=0)
+        )
 
     def delete_by_name(self, remote_name: str, storage: str) -> None:
         req: dict[str, Any] = {"delete": [remote_name], "storage": storage}

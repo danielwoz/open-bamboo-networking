@@ -115,10 +115,18 @@ def parse_vfs_path(path: str) -> Tuple[str, Optional[VfsLeaf]]:
 
 def list_storages_for_leaf(leaf: VfsLeaf) -> list[str]:
     if leaf.volume == VOLUME_EXTERNAL:
-        return [""]
+        return ["udisk", ""]
     if leaf.file_type == "model":
         return ["internal", "emmc"]
     return ["internal"]
+
+
+def delete_storage_for_leaf(leaf: VfsLeaf) -> str:
+    return upload_storage_for_leaf(leaf)
+
+
+def model_history_path(path: str) -> bool:
+    return path.startswith("/userdata/model/")
 
 
 def upload_storage_for_leaf(leaf: VfsLeaf) -> str:
@@ -203,9 +211,9 @@ class Printer6000Client:
                 leaf.file_type, list_storages_for_leaf(leaf)
             )
 
-    def download(self, printer_path: str) -> bytes:
+    def download(self, entry: FileEntry) -> bytes:
         with self._lock:
-            return self._require().download_file(printer_path)
+            return self._require().download_entry(entry)
 
     def upload(self, data: bytes, leaf: VfsLeaf, remote_name: str) -> None:
         with self._lock:
@@ -213,9 +221,10 @@ class Printer6000Client:
                 data, upload_storage_for_leaf(leaf), remote_name
             )
 
-    def delete_paths(self, paths: list[str]) -> None:
+    def delete_entry(self, entry: FileEntry, leaf: VfsLeaf) -> None:
         with self._lock:
-            self._require().delete_files(paths)
+            storage = "" if entry.path.startswith("/") else delete_storage_for_leaf(leaf)
+            self._require().delete_entry(entry, storage)
 
 
 class ProxySession:
@@ -503,8 +512,20 @@ class ProxySession:
         if entry is None:
             self.reply(550, "File not found")
             return True
+        if kind == "leaf" and leaf and leaf.file_type == "model" and model_history_path(entry.path):
+            self.reply(
+                550,
+                "P2S internal model cache: download/delete via :6000 not supported "
+                f"for {entry.path!r}; use Bambu Studio or printer screen "
+                "(Print Files > Internal)",
+            )
+            return True
         assert self.printer is not None
-        self.printer.delete_paths([entry.path])
+        try:
+            self.printer.delete_entry(entry, leaf)
+        except Printer6000Error as exc:
+            self.reply(550, str(exc))
+            return True
         self.vfs.listing_cache = None
         self.reply(250, "DELE OK")
         return True
@@ -670,8 +691,19 @@ class ProxySession:
         entry = self._lookup_entry(name)
         if entry is None:
             raise Printer6000Error(f"file not found: {name}")
+        kind, leaf = parse_vfs_path(self.vfs.path)
+        if (
+            kind == "leaf"
+            and leaf is not None
+            and leaf.file_type == "model"
+            and model_history_path(entry.path)
+        ):
+            raise Printer6000Error(
+                "P2S internal model cache cannot be downloaded via :6000 "
+                f"({entry.path}); use Bambu Studio or printer screen"
+            )
         assert self.printer is not None
-        return self.printer.download(entry.path)
+        return self.printer.download(entry)
 
     def _handle_stor(self, client_data: socket.socket, arg: str) -> bytes:
         name = arg.strip()

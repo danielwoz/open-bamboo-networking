@@ -1389,6 +1389,111 @@ Valid `param` values: `"resume"`, `"reset"`, `"pause"`, `"done"`, `"abort"`.
 
 Legacy path uses G-code `M620 R<tray_id>` instead. RFID progress is tracked via `tray_reading_bits` / `tray_read_done_bits` in `push_status.ams`.
 
+##### AMS tray `state` in `push_status` (reverse-engineered)
+
+Path: `print.ams.ams[<unit>].tray[<slot>].state` (integer). Appears in periodic **`push_status`** deltas on `device/<serial>/report`.
+
+Bambu Studio does **not** parse this field — presence comes from **`print.ams.tray_exist_bits`** (`DevFilaSystemParser::ParseAmsTrayInfo()`); metadata from `tray_type`, `tray_info_idx`, `tray_color`, etc.
+
+**Legacy encoding (values 0–3 only)**
+
+Older captures and community docs ([API_AMS_FILAMENT.md](https://github.com/coelacant1/Bambu-Lab-Cloud-API/blob/main/API_AMS_FILAMENT.md)) list only **0–3**. These already look like a **2-bit mask** (`state & 0x03`), not a sequential enum:
+
+| `state` | Bits | Community name | Tentative meaning |
+|--------:|------|----------------|-------------------|
+| **0** | `00` | Empty | No spool |
+| **1** | `01` | Loading | Spool engaged; metadata not ready (exact semantics unclear) |
+| **2** | `10` | Loaded | Metadata side set without full “ready” (rare; semantics unclear) |
+| **3** | `11` | Ready | Spool present **and** metadata applied — both low bits set when everything works |
+
+Bit **0** (`0x01`) — spool **physically present** / tray engaged.  
+Bit **1** (`0x02`) — **metadata** side; should be **1** when the slot is fully configured (**3**).
+
+**Extended encoding (newer firmware — observed P2S + AMS, May 2026)**
+
+Firmware adds more OR-ed flags on top of the same low two bits:
+
+| Bit | Mask | Role (tentative) |
+|-----|------|------------------|
+| **0** | `0x01` | Spool present / tray engaged (unchanged) |
+| **1** | `0x02` | Metadata known or **cached in memory** (see below) |
+| **2** | `0x04` | RFID / motion — **TODO** (see below) |
+| **3** | `0x08` | **Steady** slot report — idle states are **`0x08 \| (state & 0x03)`** |
+| **4** | `0x10` | RFID / motion — **TODO** (see below) |
+
+Steady states with bit **3** set (successors to legacy **0–3**):
+
+| `state` | Low bits | Meaning |
+|--------:|----------|---------|
+| **8** | `00` | Hard empty — no spool, no remembered profile |
+| **9** | `01` | Spool present, **no** metadata — UI **?**; MQTT often only **`{"id","state":9}`** |
+| **10** | `10` | No spool, **cached** metadata for next insert |
+| **11** | `11` | Spool present + metadata — normal configured tray (check **`tray_type`** non-empty; after **Clear**, **`state`** may stay **11** with blank fields — see below) |
+
+So **`8 = 0x08\|0`**, **`9 = 0x08\|1`**, **`10 = 0x08\|2`**, **`11 = 0x08\|3`**.
+
+**Which encoding does this printer use?**
+
+- **`state ≥ 4`** → extended scheme (bit **3** and/or motion bits in play).
+- On extended firmware, raw **`1`**, **`2`**, **`3`** should **not** appear as steady values: idle reporting always sets bit **3**, so steady codes are **8–11**. Values **1–3** would only fit legacy firmware without the **`0x08`** layer.
+- If you only ever see **8–11** (and transient **5** / **17** / **21** / **27** during RFID), treat the slot as extended.
+
+**Bit 1 in the extended scheme**
+
+Bit **1** describes **metadata state**, not spool presence:
+
+- **`1` with bit `0` clear** → **`10`**: slot empty, but the printer **remembers** a profile (colour/type) for the next spool.
+- **`0` with bit `0` set** → **`9`**: spool **is** in the slot, but metadata was **cleared or invalidated** — UI **?**. Example: inserting a **non-RFID / third-party** spool after a configured **official Bambu** one; the printer detects presence but knows it is no longer the same known profile.
+
+**Clear / reset from the printer filament UI**
+
+**Clear** does **not** drop **`state`** to **9** / **10** — observed **`state: 11`** (`0x08\|0x03`, both low bits set). **`tray_exist_bits`** stays set. But filament fields in MQTT are **zeroed or emptied**, e.g.:
+
+```json
+{
+  "id": "0",
+  "state": 11,
+  "tray_type": "",
+  "tray_info_idx": "",
+  "tray_color": "00000000",
+  "cols": ["00000000"],
+  "nozzle_temp_min": "0",
+  "nozzle_temp_max": "0",
+  "remain": -1,
+  "tag_uid": "0000000000000000",
+  "tray_uuid": "00000000000000000000000000000000",
+  …
+}
+```
+
+So **`state` bit 1 can stay set while the profile in JSON is already cleared** — do not treat **`state: 11`** alone as “fully configured”.
+
+**Practical “?” detection:** empty **`tray_type`** (and usually empty **`tray_info_idx`**) → UI **?** / unknown spool, same as steady **`9`**, even when **`state`** still reports **11**. Do **not** use `tag_uid` or `tray_uuid` all-zero for this — those are normal without RFID.
+
+Steady **9** with a spool installed typically sends only **`{"id":"N","state":9}`** — no `tray_type` / colour keys. **`state: 8`** can look the same shape but means an **empty** slot; use **`state`** (and **`tray_exist_bits`**) to tell them apart, not key count alone. **Clear** is different again: **full** tray object with blank/zero fields while **`state`** stays **11**.
+
+**Bits 2 and 4 — RFID scan transients**
+
+During **`ams_get_rfid`** (with read-on-insert enabled), **`state`** flashes through non-steady values for sub-second to a few seconds. **P2S observed** chain: **`17 → 21 → 5 → 21 → 5`**, then steady **8 / 9 / 10 / 11**; a neighbouring slot may show **`27`**.
+
+| `state` | Flags | Notes |
+|--------:|-------|-------|
+| **17** | `0x01\|0x10` | Brief prep phase |
+| **21** | `0x01\|0x04\|0x10` | Longest phase — slow RFID scan |
+| **5** | `0x01\|0x04` | Between **21** passes; **`21 ^ 5 = 0x10`** (only bit **4** toggles) |
+| **27** | `0x08\|0x03\|0x10` | Parked neighbour during scan |
+
+Bits **2** and **4** both change during RFID; **`tray_reading_bits`** / **`tray_read_done_bits`** in `print.ams` may correlate but were not fully mapped. **TODO:** confirm whether **`0x04`** vs **`0x10`** is feed vs tray rotation vs RFID channel; assignment may be swapped.
+
+**Related `print.ams` fields** (OpenBambuAPI [`mqtt.md`](https://github.com/Doridian/OpenBambuAPI/blob/master/mqtt.md)):
+
+| Field | Role |
+|-------|------|
+| `tray_exist_bits` | Physical spool in slot (Studio uses this for presence) |
+| `tray_reading_bits` / `tray_read_done_bits` | RFID scan in progress / complete |
+| `tray_is_bbl_bits` | Recognised official Bambu RFID profile |
+| `tray_now` / `tray_tar` / `tray_pre` | Active / target / previous flat tray id |
+
 **`ams_filament_drying`** — start or stop AMS drying (`DevFilaSystemCtrl.cpp`)
 
 Start (timed mode):
@@ -1461,7 +1566,7 @@ Air-print detection (`command_ams_air_print_detect`, ~1765):
 
 ---
 
-**Evidence:** Bambu Studio source only — no stock-plugin MITM capture for these commands. Cross-reference with `3rd_party/OpenBambuAPI/mqtt.md` for partial AMS documentation (missing the `extrusion_cali_*` family).
+**Evidence:** Bambu Studio source only — no stock-plugin MITM capture for these commands. Cross-reference with `3rd_party/OpenBambuAPI/mqtt.md` for partial AMS documentation (missing the `extrusion_cali_*` family). **`tray.state`** bitmask notes: LAN MQTT on **P2S + AMS (May 2026)**, unconfirmed in firmware.
 
 ### 6.9. User presets
 
