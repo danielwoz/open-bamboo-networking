@@ -664,6 +664,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
         src/agent.cpp
         src/auth.cpp
         src/cert_store.cpp
+        src/config.cpp
         src/cloud_auth.cpp
         src/cloud_presets.cpp
         src/cloud_session.cpp
