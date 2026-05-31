@@ -1,0 +1,7 @@
+#pragma once
+
+namespace obn::config {
+
+inline constexpr char kDefaultTemplate[] = R"obn(@OBN_CONF_DEFAULT_TEMPLATE@)obn";
+
+} // namespace obn::config

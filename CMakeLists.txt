@@ -79,6 +79,15 @@ _obn_byte_to_hex2(${_obn_b2} _obn_h2)
 set(OBN_ABI_VERSION_HEX "0x${_obn_h0}${_obn_h1}${_obn_h2}")
 message(STATUS "obn: ABI_VERSION=${OBN_ABI_VERSION_HEX} (from OBN_VERSION=${OBN_VERSION})")
 
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/packaging/obn.conf.in"
+     OBN_CONF_DEFAULT_TEMPLATE)
+set(OBN_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${OBN_GENERATED_DIR}")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/obn_conf_default.h.in"
+    "${OBN_GENERATED_DIR}/obn_conf_default.h"
+    @ONLY)
+
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ObnGitInfo.cmake")
 obn_detect_git_info(OBN_GIT_COMMIT OBN_GIT_DIRTY)
 if(OBN_GIT_COMMIT)
@@ -283,7 +292,7 @@ add_library(bambu_networking SHARED
     src/tls_dial.cpp
 )
 
-target_include_directories(bambu_networking PRIVATE include)
+target_include_directories(bambu_networking PRIVATE include ${OBN_GENERATED_DIR})
 set(_obn_git_compile_defs "")
 if(OBN_GIT_COMMIT)
     list(APPEND _obn_git_compile_defs OBN_GIT_COMMIT="${OBN_GIT_COMMIT}")
@@ -394,7 +403,7 @@ if(WIN32)
 endif()
 
 add_library(BambuSource SHARED ${_obn_bambusource_sources})
-target_include_directories(BambuSource PRIVATE include stubs)
+target_include_directories(BambuSource PRIVATE include stubs ${OBN_GENERATED_DIR})
 if(WIN32)
     set_target_properties(BambuSource PROPERTIES OUTPUT_NAME "BambuSource" PREFIX "")
     target_link_libraries(BambuSource PRIVATE
@@ -607,7 +616,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
         src/lan_tls.cpp
         src/log.cpp
         src/os_compat.cpp)
-    target_include_directories(ftps_live_test PRIVATE include)
+    target_include_directories(ftps_live_test PRIVATE include ${OBN_GENERATED_DIR})
     target_link_libraries(ftps_live_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
     # Hermetic unit test for src/ftps_parse.hpp. Exercises the `ls -l`
@@ -623,7 +632,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
         src/config.cpp
         src/log.cpp
         src/os_compat.cpp)
-    target_include_directories(config_test PRIVATE include)
+    target_include_directories(config_test PRIVATE include ${OBN_GENERATED_DIR})
     add_test(NAME config COMMAND config_test)
 
     add_executable(remote_name_test tests/remote_name_test.cpp
@@ -648,7 +657,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
         src/json_lite.cpp
         src/log.cpp
         src/os_compat.cpp)
-    target_include_directories(tunnel_local_test PRIVATE include stubs)
+    target_include_directories(tunnel_local_test PRIVATE include stubs ${OBN_GENERATED_DIR})
     target_link_libraries(tunnel_local_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     add_test(NAME tunnel_local COMMAND tunnel_local_test)
 
@@ -675,7 +684,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
         src/tls_dial.cpp
         src/tunnel_local.cpp
         src/tunnel_upload.cpp)
-    target_include_directories(lan_live_test PRIVATE include)
+    target_include_directories(lan_live_test PRIVATE include ${OBN_GENERATED_DIR})
     target_compile_definitions(lan_live_test PRIVATE
         OBN_VERSION_STRING="${OBN_VERSION}"
         ABI_VERSION=${OBN_ABI_VERSION_HEX}

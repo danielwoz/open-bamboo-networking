@@ -32,17 +32,5 @@ After installation
 
   1. Launch the slicer — it should load the open-bambu-networking plugin.
   2. Plugin settings are in obn.conf inside the slicer's config
-     directory. Edit it to customize logging, cloud access, etc.
-
-Building from source
---------------------
-
-If you prefer to build from source:
-
-  git clone https://github.com/ClusterM/open-bambu-networking.git
-  cd open-bambu-networking
-  ./configure
-  make
-  make install
-
-See the README on GitHub for full instructions.
+     directory (created automatically on first launch). Edit it to
+     customize logging, cloud access, etc.

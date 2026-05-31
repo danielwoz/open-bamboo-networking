@@ -1,8 +1,8 @@
 #!/bin/sh
 # Open Bambu Networking — interactive installer for Linux and macOS.
 # Ships inside the distribution archive next to lib/vXX.XX.XX/ directories.
-# Detects the slicer, matches the ABI version, copies binaries, patches
-# the slicer conf, and drops a default obn.conf if absent.
+# Detects the slicer, matches the ABI version, copies binaries, and patches
+# the slicer conf.
 set -eu
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -369,19 +369,9 @@ PYEOF
 
 patch_conf
 
-# ── Create default obn.conf if absent ────────────────────────────────────
+# ── Summary ──────────────────────────────────────────────────────────────
 
 OBN_CONF="$PREFIX/obn.conf"
-if [ ! -f "$OBN_CONF" ]; then
-    if [ -f "$SCRIPT_DIR/obn.conf.in" ]; then
-        cp "$SCRIPT_DIR/obn.conf.in" "$OBN_CONF"
-    else
-        die "obn.conf.in not found next to install.sh"
-    fi
-    info "Created default obn.conf"
-fi
-
-# ── Summary ──────────────────────────────────────────────────────────────
 
 printf "\n${BOLD}${GREEN}Installation complete!${RESET}\n\n"
 printf "  Plugin:     %s\n" "$DEST_DIR/$PLUGIN_DEST_NAME"
@@ -390,6 +380,6 @@ printf "  Slicer:     %s (%s)\n" "$CLIENT_LABEL" "$PREFIX"
 echo ""
 printf "Next steps:\n"
 printf "  1. Launch %s — it should load the open-bambu-networking plugin\n" "$CLIENT_LABEL"
-printf "  2. Edit %s to customize plugin behavior\n" "$OBN_CONF"
+printf "  2. Edit %s to customize plugin behavior (created on first launch)\n" "$OBN_CONF"
 echo ""
 printf "GitHub: ${BOLD}https://github.com/ClusterM/open-bambu-networking${RESET}\n\n"

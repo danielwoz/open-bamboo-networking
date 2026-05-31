@@ -60,6 +60,13 @@ static int test_create_template()
     CHECK(fs::exists(path));
     const auto first_size = fs::file_size(path);
 
+    std::ifstream in(path);
+    std::string content((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+    CHECK(content.find("cloud_global_api_host = https://api.bambulab.com")
+          != std::string::npos);
+    CHECK(content.find("block_cloud = 1") != std::string::npos);
+
     write_conf(dir, "log_level = warn\n");
     (void)obn::config::load_or_create(dir.string());
     CHECK(obn::config::current().log_level == "warn");

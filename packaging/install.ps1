@@ -1,8 +1,7 @@
 # Open Bambu Networking — interactive installer for Windows.
 # Ships inside the distribution archive next to lib\vXX.XX.XX\ directories.
 # Detects the slicer, matches the ABI version, copies binaries, patches
-# the slicer conf, registers the DirectShow filter, and drops a default
-# obn.conf if absent.
+# the slicer conf, and registers the DirectShow filter.
 
 [CmdletBinding()]
 param()
@@ -362,20 +361,9 @@ if (Test-Path $bsDll) {
     }
 }
 
-# ── Create default obn.conf if absent ────────────────────────────────────
+# ── Summary ──────────────────────────────────────────────────────────────
 
 $ObnConf = Join-Path $Prefix "obn.conf"
-if (-not (Test-Path $ObnConf)) {
-    $template = Join-Path $ScriptDir "obn.conf.in"
-    if (-not (Test-Path $template)) {
-        Write-Err "obn.conf.in not found next to install.ps1"
-        Wait-And-Exit
-    }
-    Copy-Item -Path $template -Destination $ObnConf -Force
-    Write-Info "Created default obn.conf"
-}
-
-# ── Summary ──────────────────────────────────────────────────────────────
 
 Write-Host ""
 Write-Host "Installation complete!" -ForegroundColor Green
@@ -386,7 +374,7 @@ Write-Host "  Slicer:     $ClientLabel ($Prefix)"
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1. Launch $ClientLabel - it should load the open-bambu-networking plugin"
-Write-Host "  2. Edit $ObnConf to customize plugin behavior"
+Write-Host "  2. Edit $ObnConf to customize plugin behavior (created on first launch)"
 Write-Host ""
 Write-Host "GitHub: https://github.com/ClusterM/open-bambu-networking" -ForegroundColor Cyan
 Write-Host ""
