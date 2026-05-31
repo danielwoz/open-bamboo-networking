@@ -99,7 +99,7 @@ if (-not [string]::IsNullOrEmpty($exeVer)) {
     $detected = $confVer
 } elseif ($Client -eq "orca_slicer") {
     $detected = "02.03.00"
-    Write-Warn "No $VersionKey found — defaulting to $detected"
+    Write-Warn "No $VersionKey found -- defaulting to $detected"
 }
 
 if ([string]::IsNullOrEmpty($detected)) {
@@ -287,7 +287,7 @@ if (Test-Path $ConfPath) {
         Write-Warn "Could not parse $ConfName, skipping patch: $_"
     }
 } else {
-    Write-Warn "$ConfName not found — launch $ClientLabel once, then re-run"
+    Write-Warn "$ConfName not found -- launch $ClientLabel once, then re-run"
 }
 
 # ── Register DirectShow filter ───────────────────────────────────────────
@@ -311,7 +311,7 @@ if (Test-Path $bsDll) {
 $ObnConf = Join-Path $Prefix "obn.conf"
 if (-not (Test-Path $ObnConf)) {
     @"
-## Open Bambu Networking — user settings
+## Open Bambu Networking -- user settings
 ##
 ## Lines starting with ## are comments.
 ## Lines starting with a single # are disabled settings;
@@ -320,14 +320,14 @@ if (-not (Test-Path $ObnConf)) {
 ## Log settings can also be set via OBN_LOG_* environment variables;
 ## when set, they take priority over this file.
 
-## ─── Logging ────────────────────────────────────────────────
+## --- Logging --------------------------------------------------------
 
 log_level = info
 log_stderr = 1
 log_to_file = 0
 # log_file = C:\path\to\obn.log
 
-## ─── Cloud endpoints ──────────────────────────────────────
+## --- Cloud endpoints ------------------------------------------------
 ##
 ## Leave empty for production US/CN by country_code.
 ##   Global:  https://api.bambulab.com / https://bambulab.com / us.mqtt.bambulab.com
@@ -339,20 +339,20 @@ log_to_file = 0
 # cloud_mqtt_host = us.mqtt.bambulab.com
 # cloud_mqtt_port = 8883
 
-## ─── Cloud access ────────────────────────────────────────
+## --- Cloud access ---------------------------------------------------
 ##
 ## Block background cloud MQTT/REST connections.
 ## Auth, preset sync, and bind/unbind are still allowed.
 
 # block_cloud = 1
 
-## ─── LAN TLS ─────────────────────────────────────────────
+## --- LAN TLS --------------------------------------------------------
 ##
 ## Skip TLS certificate verification for LAN MQTT/FTPS connections.
 
 # lan_tls_skip_verify = 0
 
-## ─── Print behavior ──────────────────────────────────────
+## --- Print behavior -------------------------------------------------
 ##
 ## Always save timelapse to external storage (USB/SD), ignoring the
 ## Internal/External toggle in the print dialog.  Studio defaults
@@ -360,7 +360,7 @@ log_to_file = 0
 
 # force_timelapse_external = 0
 
-## ─── BambuSource logging ──────────────────────────────────
+## --- BambuSource logging --------------------------------------------
 ##
 ## Separate log level/file for the BambuSource (video/CTRL) library.
 ## Only read if BambuSource is loaded; file is never created by it.

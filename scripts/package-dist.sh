@@ -46,7 +46,7 @@ collect_abi_dirs() {
         fi
         local target="$dest_base/lib/v${abi_ver}"
         mkdir -p "$target"
-        cp "$art_dir"/* "$target/"
+        cp -r "$art_dir"/* "$target/"
         echo "  Collected v${abi_ver} -> $(basename "$dest_base")/lib/v${abi_ver}/"
     done
 }
