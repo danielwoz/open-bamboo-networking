@@ -224,7 +224,7 @@ Write-Host ""
 $confirm = Read-Host "Proceed? [Y/n]"
 if ($confirm -match '^[Nn]') {
     Write-Host "Aborted."
-    exit 0
+    Wait-And-Exit -code 0
 }
 Write-Host ""
 
@@ -385,9 +385,8 @@ Write-Host "  Config:     $ObnConf"
 Write-Host "  Slicer:     $ClientLabel ($Prefix)"
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  1. Close $ClientLabel if it is running"
-Write-Host "  2. Launch $ClientLabel - it should load the open-bambu-networking plugin"
-Write-Host "  3. Edit $ObnConf to customize plugin behavior"
+Write-Host "  1. Launch $ClientLabel - it should load the open-bambu-networking plugin"
+Write-Host "  2. Edit $ObnConf to customize plugin behavior"
 Write-Host ""
 Write-Host "GitHub: https://github.com/ClusterM/open-bambu-networking" -ForegroundColor Cyan
 Write-Host ""

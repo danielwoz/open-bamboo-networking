@@ -21,12 +21,17 @@ What's inside
 
   @INSTALL_SCRIPT@       Interactive installer script.
 
+Before installation
+-------------------
+
+  Close Bambu Studio / Orca Slicer if it is running. The installer
+  will remind you before copying files.
+
 After installation
 ------------------
 
-  1. Close Bambu Studio / Orca Slicer if it is running.
-  2. Launch it — it should load the open-bambu-networking plugin.
-  3. Plugin settings are in obn.conf inside the slicer's config
+  1. Launch the slicer — it should load the open-bambu-networking plugin.
+  2. Plugin settings are in obn.conf inside the slicer's config
      directory. Edit it to customize logging, cloud access, etc.
 
 Building from source
