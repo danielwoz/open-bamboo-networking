@@ -66,6 +66,19 @@ Write-Host ""
 
 $Prefix = $ClientDir
 
+if (-not (Test-Path $Prefix)) {
+    Write-Err "$ClientLabel config directory not found: $Prefix"
+    Write-Err "Launch $ClientLabel at least once to create its config, then re-run this installer."
+    exit 1
+}
+
+$ConfPath = Join-Path $Prefix $ConfName
+if (-not (Test-Path $ConfPath)) {
+    Write-Err "$ConfName not found at $ConfPath"
+    Write-Err "Launch $ClientLabel at least once to create its config, then re-run this installer."
+    exit 1
+}
+
 # ── ABI version detection ────────────────────────────────────────────────
 
 function Detect-VersionFromConf {
@@ -111,18 +124,24 @@ function Detect-VersionFromExe {
     return ""
 }
 
-$ConfPath = Join-Path $Prefix $ConfName
-
 $confVer = Detect-VersionFromConf -ConfPath $ConfPath -Key $VersionKey
 $exeVer  = Detect-VersionFromExe -Name $DisplayName
 
 $detected = ""
+$detectedSource = ""
 if (-not [string]::IsNullOrEmpty($exeVer)) {
     $detected = $exeVer
+    $detectedSource = "$ClientLabel v$detected"
 } elseif (-not [string]::IsNullOrEmpty($confVer)) {
     $detected = $confVer
+    if ($Client -eq "orca_slicer") {
+        $detectedSource = "$ClientLabel $VersionKey $detected"
+    } else {
+        $detectedSource = "$ClientLabel v$detected"
+    }
 } elseif ($Client -eq "orca_slicer") {
     $detected = "02.03.00"
+    $detectedSource = "default"
     Write-Warn "No $VersionKey found -- defaulting to $detected"
 }
 
@@ -171,7 +190,7 @@ if (-not $MatchedDir -or -not (Test-Path $MatchedDir)) {
                   Sort-Object Name |
                   ForEach-Object { $_.Name -replace '^v', '' }) -join ', '
     if (-not $available) { $available = "none" }
-    Write-Err "No compatible ABI version for $ClientLabel v$detected (need $AbiPrefix)."
+    Write-Err "No compatible ABI version for $detectedSource (need $AbiPrefix)."
     Write-Err "Available in this package: $available"
     Write-Err "You may need a newer distribution package from GitHub."
     exit 1
@@ -187,7 +206,7 @@ $DestDir = Join-Path $Prefix "plugins"
 Write-Host "Installation summary:" -ForegroundColor White
 Write-Host "  Slicer:       $ClientLabel"
 Write-Host "  Config dir:   $Prefix"
-Write-Host "  ABI version:  $MatchedVer (detected $ClientLabel v$detected)"
+Write-Host "  ABI version:  $MatchedVer ($detectedSource)"
 Write-Host "  Install to:   $DestDir"
 Write-Host ""
 $confirm = Read-Host "Proceed? [Y/n]"

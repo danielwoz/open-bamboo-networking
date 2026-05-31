@@ -132,46 +132,39 @@ esac
 
 find_prefix
 
-# If no existing directory found, default to the standard path
-if [ -z "$PREFIX" ]; then
-    case "$CLIENT" in
-        bambu_studio)
-            case "$OS" in
-                Linux)  PREFIX="${HOME}/.config/BambuStudio" ;;
-                Darwin) PREFIX="${HOME}/Library/Application Support/BambuStudio" ;;
-            esac
-            ;;
-        orca_slicer)
-            case "$OS" in
-                Linux)  PREFIX="${HOME}/.config/OrcaSlicer" ;;
-                Darwin) PREFIX="${HOME}/Library/Application Support/OrcaSlicer" ;;
-            esac
-            ;;
-    esac
-fi
-
-if [ -z "$PREFIX" ]; then
-    die "Could not determine config directory for $CLIENT_LABEL"
+if [ -z "$PREFIX" ] || [ ! -d "$PREFIX" ]; then
+    die "$CLIENT_LABEL config directory not found.
+  Launch $CLIENT_LABEL at least once to create its config, then re-run this installer."
 fi
 
 # ── ABI version detection ────────────────────────────────────────────────
 
 CONF_FILE="$PREFIX/$CONF_NAME"
-DETECTED_VER=""
-if [ -r "$CONF_FILE" ]; then
-    DETECTED_VER=$(sed -n \
-        "s/^[[:space:]]*\"${VERSION_KEY}\"[[:space:]]*:[[:space:]]*\"\([0-9][0-9.]*\)\".*/\1/p" \
-        "$CONF_FILE" | head -n1)
+if [ ! -f "$CONF_FILE" ]; then
+    die "$CONF_NAME not found at $CONF_FILE
+  Launch $CLIENT_LABEL at least once to create its config, then re-run this installer."
+fi
+
+DETECTED_VER=$(sed -n \
+    "s/^[[:space:]]*\"${VERSION_KEY}\"[[:space:]]*:[[:space:]]*\"\([0-9][0-9.]*\)\".*/\1/p" \
+    "$CONF_FILE" | head -n1)
+
+DETECTED_SOURCE=""
+if [ -n "$DETECTED_VER" ]; then
+    case "$CLIENT" in
+        orca_slicer) DETECTED_SOURCE="$CLIENT_LABEL $VERSION_KEY $DETECTED_VER" ;;
+        *)           DETECTED_SOURCE="$CLIENT_LABEL v$DETECTED_VER" ;;
+    esac
 fi
 
 if [ -z "$DETECTED_VER" ] && [ "$CLIENT" = "orca_slicer" ]; then
     DETECTED_VER="02.03.00"
+    DETECTED_SOURCE="default"
     warn "No $VERSION_KEY in $CONF_FILE — defaulting to $DETECTED_VER"
 fi
 
 if [ -z "$DETECTED_VER" ]; then
-    die "Cannot determine ABI version from $CONF_FILE.
-  Launch $CLIENT_LABEL at least once to create its config, then re-run this installer."
+    die "Cannot determine ABI version: key \"$VERSION_KEY\" not found in $CONF_FILE."
 fi
 
 # Extract major.minor.patch (first 3 components)
@@ -204,7 +197,7 @@ fi
 
 if [ -z "$MATCHED_DIR" ] || [ ! -d "$MATCHED_DIR" ]; then
     AVAILABLE=$(ls -d "$LIB_DIR"/v*/ 2>/dev/null | xargs -I{} basename {} | sed 's/^v//' | tr '\n' ' ')
-    die "No compatible ABI version for $CLIENT_LABEL v${DETECTED_VER} (need ${ABI_PREFIX}).
+    die "No compatible ABI version for $DETECTED_SOURCE (need ${ABI_PREFIX}).
   Available in this package: ${AVAILABLE:-none}
   You may need a newer distribution package from GitHub."
 fi
@@ -219,7 +212,7 @@ DEST_DIR="$PREFIX/plugins"
 printf "${BOLD}Installation summary:${RESET}\n"
 printf "  Slicer:       %s\n" "$CLIENT_LABEL"
 printf "  Config dir:   %s\n" "$PREFIX"
-printf "  ABI version:  %s (detected %s v%s)\n" "$MATCHED_VER" "$CLIENT_LABEL" "$DETECTED_VER"
+printf "  ABI version:  %s (%s)\n" "$MATCHED_VER" "$DETECTED_SOURCE"
 printf "  Install to:   %s\n" "$DEST_DIR"
 echo ""
 prompt_yn "Proceed?" || { echo "Aborted."; exit 0; }
