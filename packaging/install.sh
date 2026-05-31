@@ -52,39 +52,103 @@ echo ""
 
 # ── Config directory detection ───────────────────────────────────────────
 
+# resolve_dirs <conf_name> <version_key> <dir_suffix>
+# Sets CONF_NAME, VERSION_KEY, and populates candidate arrays.
+resolve_dirs() {
+    CONF_NAME="$1"
+    VERSION_KEY="$2"
+    local suffix="$3"
+    NATIVE_DIR="${HOME}/.config/${suffix}"
+    FLATPAK_DIR="${HOME}/.var/app/com.bambulab.${suffix}/config/${suffix}"
+    MAC_DIR="${HOME}/Library/Application Support/${suffix}"
+}
+
+# find_prefix: pick PREFIX from the candidate dirs for the current OS.
+find_prefix() {
+    PREFIX=""
+    case "$OS" in
+        Linux)
+            if [ -d "$NATIVE_DIR" ]; then
+                PREFIX="$NATIVE_DIR"
+            elif [ -d "$FLATPAK_DIR" ]; then
+                PREFIX="$FLATPAK_DIR"
+                info "Detected Flatpak install"
+            fi
+            ;;
+        Darwin)
+            if [ -d "$MAC_DIR" ]; then
+                PREFIX="$MAC_DIR"
+            fi
+            ;;
+    esac
+}
+
 case "$CLIENT" in
     bambu_studio)
-        CONF_NAME="BambuStudio.conf"
-        VERSION_KEY="version"
-        NATIVE_DIR="${HOME}/.config/BambuStudio"
-        FLATPAK_DIR="${HOME}/.var/app/com.bambulab.BambuStudio/config/BambuStudio"
-        MAC_DIR="${HOME}/Library/Application Support/BambuStudio"
+        # Check whether both stable and beta directories exist
+        resolve_dirs "BambuStudio.conf" "version" "BambuStudio"
+        STABLE_NATIVE="$NATIVE_DIR"; STABLE_FLATPAK="$FLATPAK_DIR"; STABLE_MAC="$MAC_DIR"
+        resolve_dirs "BambuStudio.conf" "version" "BambuStudioBeta"
+        BETA_NATIVE="$NATIVE_DIR"; BETA_FLATPAK="$FLATPAK_DIR"; BETA_MAC="$MAC_DIR"
+
+        HAS_STABLE=false; HAS_BETA=false
+        case "$OS" in
+            Linux)
+                { [ -d "$STABLE_NATIVE" ] || [ -d "$STABLE_FLATPAK" ]; } && HAS_STABLE=true
+                { [ -d "$BETA_NATIVE" ]   || [ -d "$BETA_FLATPAK" ];   } && HAS_BETA=true
+                ;;
+            Darwin)
+                [ -d "$STABLE_MAC" ] && HAS_STABLE=true
+                [ -d "$BETA_MAC" ]   && HAS_BETA=true
+                ;;
+        esac
+
+        if [ "$HAS_STABLE" = true ] && [ "$HAS_BETA" = true ]; then
+            printf "Both Bambu Studio and Bambu Studio Beta configs found.\n"
+            printf "  ${BOLD}1${RESET}) Bambu Studio (stable)\n"
+            printf "  ${BOLD}2${RESET}) Bambu Studio Beta\n"
+            printf "\nChoice [1]: "
+            read -r edition
+            case "$edition" in
+                2)
+                    CLIENT_LABEL="Bambu Studio Beta"
+                    resolve_dirs "BambuStudio.conf" "version" "BambuStudioBeta"
+                    ;;
+                *)
+                    resolve_dirs "BambuStudio.conf" "version" "BambuStudio"
+                    ;;
+            esac
+        elif [ "$HAS_BETA" = true ]; then
+            CLIENT_LABEL="Bambu Studio Beta"
+            resolve_dirs "BambuStudio.conf" "version" "BambuStudioBeta"
+        else
+            resolve_dirs "BambuStudio.conf" "version" "BambuStudio"
+        fi
         ;;
     orca_slicer)
-        CONF_NAME="OrcaSlicer.conf"
-        VERSION_KEY="network_plugin_version"
-        NATIVE_DIR="${HOME}/.config/OrcaSlicer"
-        FLATPAK_DIR="${HOME}/.var/app/com.orcaslicer.OrcaSlicer/config/OrcaSlicer"
-        MAC_DIR="${HOME}/Library/Application Support/OrcaSlicer"
+        resolve_dirs "OrcaSlicer.conf" "network_plugin_version" "OrcaSlicer"
         ;;
 esac
 
-PREFIX=""
-case "$OS" in
-    Linux)
-        if [ -d "$NATIVE_DIR" ]; then
-            PREFIX="$NATIVE_DIR"
-        elif [ -d "$FLATPAK_DIR" ]; then
-            PREFIX="$FLATPAK_DIR"
-            info "Detected Flatpak $CLIENT_LABEL install"
-        else
-            PREFIX="$NATIVE_DIR"
-        fi
-        ;;
-    Darwin)
-        PREFIX="$MAC_DIR"
-        ;;
-esac
+find_prefix
+
+# If no existing directory found, default to the standard path
+if [ -z "$PREFIX" ]; then
+    case "$CLIENT" in
+        bambu_studio)
+            case "$OS" in
+                Linux)  PREFIX="${HOME}/.config/BambuStudio" ;;
+                Darwin) PREFIX="${HOME}/Library/Application Support/BambuStudio" ;;
+            esac
+            ;;
+        orca_slicer)
+            case "$OS" in
+                Linux)  PREFIX="${HOME}/.config/OrcaSlicer" ;;
+                Darwin) PREFIX="${HOME}/Library/Application Support/OrcaSlicer" ;;
+            esac
+            ;;
+    esac
+fi
 
 if [ -z "$PREFIX" ]; then
     die "Could not determine config directory for $CLIENT_LABEL"

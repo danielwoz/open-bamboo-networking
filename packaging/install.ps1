@@ -35,8 +35,32 @@ if ($choice -eq "2") {
     $ClientLabel = "Bambu Studio"
     $ConfName    = "BambuStudio.conf"
     $VersionKey  = "version"
-    $ClientDir   = Join-Path $env:APPDATA "BambuStudio"
     $DisplayName = "Bambu Studio"
+
+    $stableDir = Join-Path $env:APPDATA "BambuStudio"
+    $betaDir   = Join-Path $env:APPDATA "BambuStudioBeta"
+    $hasStable = Test-Path $stableDir
+    $hasBeta   = Test-Path $betaDir
+
+    if ($hasStable -and $hasBeta) {
+        Write-Host ""
+        Write-Host "Both Bambu Studio and Bambu Studio Beta configs found."
+        Write-Host "  1) Bambu Studio (stable)"
+        Write-Host "  2) Bambu Studio Beta"
+        Write-Host ""
+        $edition = Read-Host "Choice [1]"
+        if ($edition -eq "2") {
+            $ClientLabel = "Bambu Studio Beta"
+            $ClientDir = $betaDir
+        } else {
+            $ClientDir = $stableDir
+        }
+    } elseif ($hasBeta) {
+        $ClientLabel = "Bambu Studio Beta"
+        $ClientDir = $betaDir
+    } else {
+        $ClientDir = $stableDir
+    }
 }
 Write-Host ""
 
