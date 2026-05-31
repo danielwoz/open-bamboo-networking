@@ -215,6 +215,8 @@ printf "  Config dir:   %s\n" "$PREFIX"
 printf "  ABI version:  %s (%s)\n" "$MATCHED_VER" "$DETECTED_SOURCE"
 printf "  Install to:   %s\n" "$DEST_DIR"
 echo ""
+warn "Close $CLIENT_LABEL before proceeding. If it is running, it will overwrite the patched config on exit."
+echo ""
 prompt_yn "Proceed?" || { echo "Aborted."; exit 0; }
 echo ""
 

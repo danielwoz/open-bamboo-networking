@@ -219,6 +219,8 @@ Write-Host "  Config dir:   $Prefix"
 Write-Host "  ABI version:  $MatchedVer ($detectedSource)"
 Write-Host "  Install to:   $DestDir"
 Write-Host ""
+Write-Warn "Close $ClientLabel before proceeding. If it is running, it will overwrite the patched config on exit."
+Write-Host ""
 $confirm = Read-Host "Proceed? [Y/n]"
 if ($confirm -match '^[Nn]') {
     Write-Host "Aborted."
