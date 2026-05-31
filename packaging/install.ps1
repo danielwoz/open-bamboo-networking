@@ -260,33 +260,31 @@ if (Test-Path $ConfPath) {
 
         if ($null -ne $conf.app) {
             if ($Client -eq "bambu_studio") {
-                if ($conf.app.installed_networking -ne "1") {
-                    $conf.app.installed_networking = "1"; $changed = $true
-                }
-                if ($conf.app.update_network_plugin -ne "false") {
-                    $conf.app.update_network_plugin = "false"; $changed = $true
-                }
-                if ($conf.app.ignore_module_cert -ne "1") {
-                    $conf.app.ignore_module_cert = "1"; $changed = $true
+                $studioPatches = @{
+                    installed_networking = "1"
+                    update_network_plugin = "false"
+                    ignore_module_cert = "1"
                 }
             } else {
-                $orcaPatches = @{
+                $studioPatches = @{
                     installed_networking = "true"
                     network_plugin_version = $PluginVer
                     network_plugin_remind_later = "true"
                     ignore_module_cert = "1"
                 }
-                foreach ($k in $orcaPatches.Keys) {
-                    $current = $conf.app | Select-Object -ExpandProperty $k -ErrorAction SilentlyContinue
-                    if ($current -ne $orcaPatches[$k]) {
-                        if ($null -eq ($conf.app | Get-Member -Name $k -MemberType NoteProperty)) {
-                            $conf.app | Add-Member -NotePropertyName $k -NotePropertyValue $orcaPatches[$k]
-                        } else {
-                            $conf.app.$k = $orcaPatches[$k]
-                        }
-                        $changed = $true
+            }
+            foreach ($k in $studioPatches.Keys) {
+                $current = $conf.app | Select-Object -ExpandProperty $k -ErrorAction SilentlyContinue
+                if ($current -ne $studioPatches[$k]) {
+                    if ($null -eq ($conf.app | Get-Member -Name $k -MemberType NoteProperty)) {
+                        $conf.app | Add-Member -NotePropertyName $k -NotePropertyValue $studioPatches[$k]
+                    } else {
+                        $conf.app.$k = $studioPatches[$k]
                     }
+                    $changed = $true
                 }
+            }
+            if ($Client -eq "orca_slicer") {
                 $skipped = $conf.app | Select-Object -ExpandProperty network_plugin_skipped_versions -ErrorAction SilentlyContinue
                 if ($skipped -and $skipped.Contains($PluginVer)) {
                     $parts = ($skipped -split ';') | Where-Object { $_ -and $_ -ne $PluginVer }
