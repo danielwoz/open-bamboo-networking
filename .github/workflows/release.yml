@@ -24,8 +24,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  preflight:
+    name: Verify version tag
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check tag matches version.hpp
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          HPP_VERSION=$(sed -n 's/.*OBN_PROJECT_VERSION "\([^"]*\)".*/\1/p' include/obn/version.hpp)
+          if [ -z "$HPP_VERSION" ]; then
+            echo "::error::Cannot parse OBN_PROJECT_VERSION from include/obn/version.hpp"
+            exit 1
+          fi
+          if [ "$TAG" != "$HPP_VERSION" ]; then
+            echo "::error::Tag '$TAG' does not match version in include/obn/version.hpp ('$HPP_VERSION')"
+            exit 1
+          fi
+          echo "Version check passed: $TAG"
+
   build:
     name: v${{ matrix.abi }}.xx-linux-${{ matrix.arch }}
+    needs: [preflight]
     runs-on: ${{ matrix.arch == 'x64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     strategy:
       fail-fast: false
@@ -93,6 +124,7 @@ jobs:
 
   build-windows:
     name: v${{ matrix.abi }}.xx-windows-x64
+    needs: [preflight]
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -171,6 +203,7 @@ jobs:
 
   build-macos:
     name: v${{ matrix.abi }}.xx-macos
+    needs: [preflight]
     runs-on: macos-latest
     strategy:
       fail-fast: false
