@@ -57,85 +57,102 @@ echo ""
 
 # ── Config directory detection ───────────────────────────────────────────
 
-# resolve_dirs <conf_name> <version_key> <dir_suffix>
-# Sets CONF_NAME, VERSION_KEY, and populates candidate arrays.
-resolve_dirs() {
-    CONF_NAME="$1"
-    VERSION_KEY="$2"
-    local suffix="$3"
-    NATIVE_DIR="${HOME}/.config/${suffix}"
-    FLATPAK_DIR="${HOME}/.var/app/com.bambulab.${suffix}/config/${suffix}"
-    MAC_DIR="${HOME}/Library/Application Support/${suffix}"
-}
+# Known config paths per client variant (Linux only; macOS uses ~/Library/...).
+# Format: label|conf_name|version_key|dir_path
+# The Flatpak app-id for BambuStudio/BambuStudioBeta is com.bambulab.*,
+# for OrcaSlicer it is com.orcaslicer.OrcaSlicer.
 
-# find_prefix: pick PREFIX from the candidate dirs for the current OS.
-find_prefix() {
-    PREFIX=""
-    case "$OS" in
-        Linux)
-            if [ -d "$NATIVE_DIR" ]; then
-                PREFIX="$NATIVE_DIR"
-            elif [ -d "$FLATPAK_DIR" ]; then
-                PREFIX="$FLATPAK_DIR"
-                info "Detected Flatpak install"
-            fi
+build_candidates() {
+    CANDIDATES=""
+    N_CANDIDATES=0
+
+    add_candidate() {
+        local label="$1" conf_name="$2" version_key="$3" dir_path="$4"
+        if [ -d "$dir_path" ]; then
+            N_CANDIDATES=$((N_CANDIDATES + 1))
+            CANDIDATES="${CANDIDATES}${N_CANDIDATES}|${label}|${conf_name}|${version_key}|${dir_path}
+"
+        fi
+    }
+
+    case "$CLIENT" in
+        bambu_studio)
+            case "$OS" in
+                Linux)
+                    add_candidate "Bambu Studio" \
+                        "BambuStudio.conf" "version" \
+                        "${HOME}/.config/BambuStudio"
+                    add_candidate "Bambu Studio (Flatpak)" \
+                        "BambuStudio.conf" "version" \
+                        "${HOME}/.var/app/com.bambulab.BambuStudio/config/BambuStudio"
+                    add_candidate "Bambu Studio Beta" \
+                        "BambuStudio.conf" "version" \
+                        "${HOME}/.config/BambuStudioBeta"
+                    add_candidate "Bambu Studio Beta (Flatpak)" \
+                        "BambuStudio.conf" "version" \
+                        "${HOME}/.var/app/com.bambulab.BambuStudioBeta/config/BambuStudioBeta"
+                    ;;
+                Darwin)
+                    add_candidate "Bambu Studio" \
+                        "BambuStudio.conf" "version" \
+                        "${HOME}/Library/Application Support/BambuStudio"
+                    add_candidate "Bambu Studio Beta" \
+                        "BambuStudio.conf" "version" \
+                        "${HOME}/Library/Application Support/BambuStudioBeta"
+                    ;;
+            esac
             ;;
-        Darwin)
-            if [ -d "$MAC_DIR" ]; then
-                PREFIX="$MAC_DIR"
-            fi
+        orca_slicer)
+            case "$OS" in
+                Linux)
+                    add_candidate "Orca Slicer" \
+                        "OrcaSlicer.conf" "network_plugin_version" \
+                        "${HOME}/.config/OrcaSlicer"
+                    add_candidate "Orca Slicer (Flatpak)" \
+                        "OrcaSlicer.conf" "network_plugin_version" \
+                        "${HOME}/.var/app/com.orcaslicer.OrcaSlicer/config/OrcaSlicer"
+                    ;;
+                Darwin)
+                    add_candidate "Orca Slicer" \
+                        "OrcaSlicer.conf" "network_plugin_version" \
+                        "${HOME}/Library/Application Support/OrcaSlicer"
+                    ;;
+            esac
             ;;
     esac
 }
 
-case "$CLIENT" in
-    bambu_studio)
-        # Check whether both stable and beta directories exist
-        resolve_dirs "BambuStudio.conf" "version" "BambuStudio"
-        STABLE_NATIVE="$NATIVE_DIR"; STABLE_FLATPAK="$FLATPAK_DIR"; STABLE_MAC="$MAC_DIR"
-        resolve_dirs "BambuStudio.conf" "version" "BambuStudioBeta"
-        BETA_NATIVE="$NATIVE_DIR"; BETA_FLATPAK="$FLATPAK_DIR"; BETA_MAC="$MAC_DIR"
+build_candidates
 
-        HAS_STABLE=false; HAS_BETA=false
-        case "$OS" in
-            Linux)
-                { [ -d "$STABLE_NATIVE" ] || [ -d "$STABLE_FLATPAK" ]; } && HAS_STABLE=true
-                { [ -d "$BETA_NATIVE" ]   || [ -d "$BETA_FLATPAK" ];   } && HAS_BETA=true
-                ;;
-            Darwin)
-                [ -d "$STABLE_MAC" ] && HAS_STABLE=true
-                [ -d "$BETA_MAC" ]   && HAS_BETA=true
-                ;;
-        esac
+if [ "$N_CANDIDATES" -eq 0 ]; then
+    die "$CLIENT_LABEL config directory not found.
+  Launch $CLIENT_LABEL at least once to create its config, then re-run this installer."
+fi
 
-        if [ "$HAS_STABLE" = true ] && [ "$HAS_BETA" = true ]; then
-            printf "Both Bambu Studio and Bambu Studio Beta configs found.\n"
-            printf "  ${BOLD}1${RESET}) Bambu Studio (stable)\n"
-            printf "  ${BOLD}2${RESET}) Bambu Studio Beta\n"
-            printf "\nChoice [1]: "
-            read -r edition
-            case "$edition" in
-                2)
-                    CLIENT_LABEL="Bambu Studio Beta"
-                    resolve_dirs "BambuStudio.conf" "version" "BambuStudioBeta"
-                    ;;
-                *)
-                    resolve_dirs "BambuStudio.conf" "version" "BambuStudio"
-                    ;;
-            esac
-        elif [ "$HAS_BETA" = true ]; then
-            CLIENT_LABEL="Bambu Studio Beta"
-            resolve_dirs "BambuStudio.conf" "version" "BambuStudioBeta"
-        else
-            resolve_dirs "BambuStudio.conf" "version" "BambuStudio"
-        fi
-        ;;
-    orca_slicer)
-        resolve_dirs "OrcaSlicer.conf" "network_plugin_version" "OrcaSlicer"
-        ;;
-esac
+if [ "$N_CANDIDATES" -eq 1 ]; then
+    # Single candidate — use it directly
+    CHOSEN_LINE=$(printf '%s' "$CANDIDATES" | head -n1)
+else
+    # Multiple candidates — let the user pick
+    printf "Multiple installations found:\n"
+    printf '%s' "$CANDIDATES" | while IFS='|' read -r num label _ _ dir_path; do
+        printf "  ${BOLD}%s${RESET}) %s (%s)\n" "$num" "$label" "$dir_path"
+    done
+    printf "\nChoice [1]: "
+    read -r pick
+    pick="${pick:-1}"
+    CHOSEN_LINE=$(printf '%s' "$CANDIDATES" | sed -n "${pick}p")
+    if [ -z "$CHOSEN_LINE" ]; then
+        die "Invalid choice: $pick"
+    fi
+fi
 
-find_prefix
+# Parse the chosen candidate
+CLIENT_LABEL=$(printf '%s' "$CHOSEN_LINE" | cut -d'|' -f2)
+CONF_NAME=$(printf '%s' "$CHOSEN_LINE" | cut -d'|' -f3)
+VERSION_KEY=$(printf '%s' "$CHOSEN_LINE" | cut -d'|' -f4)
+PREFIX=$(printf '%s' "$CHOSEN_LINE" | cut -d'|' -f5)
+echo ""
 
 if [ -z "$PREFIX" ] || [ ! -d "$PREFIX" ]; then
     die "$CLIENT_LABEL config directory not found.
