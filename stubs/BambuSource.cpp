@@ -505,10 +505,9 @@ struct Tunnel {
     std::unique_ptr<obn::ftps::Client> ftp;
     // True if the FTPS root == storage mount (P2S / USB-only printers).
     bool             root_is_storage = false;
-    // One of "sdcard" / "usb" / "" (unknown).
+    // Studio-facing label: "sdcard" (legacy SD mount) or "udisk" (USB).
     std::string      storage_label;
-    // Pre-computed prefix used when talking to FTPS: "/sdcard" or "/usb"
-    // when both mounts exist, "" when root IS the storage.
+    // FTPS path prefix: "/sdcard", "/usb", or "" when root IS the storage.
     std::string      ftp_prefix;
 
     // CTRL request inbox (Bambu_SendMessage) and reply outbox
@@ -820,11 +819,12 @@ std::string ensure_ftp(Tunnel* t)
         t->ftp_prefix      = "/sdcard";
         t->root_is_storage = false;
     } else if (t->ftp->cwd("/usb").empty()) {
-        t->storage_label   = "usb";
+        t->storage_label   = "udisk";
         t->ftp_prefix      = "/usb";
         t->root_is_storage = false;
     } else if (t->ftp->cwd("/").empty()) {
-        t->storage_label   = "sdcard";
+        // USB-only printers: FTPS root is the stick; Studio expects "udisk".
+        t->storage_label   = "udisk";
         t->ftp_prefix      = "";
         t->root_is_storage = true;
     } else {
@@ -860,6 +860,26 @@ std::string resolve_subtree(const Tunnel* t, const std::string& type)
     if (type == "timelapse") return t->ftp_prefix + "/timelapse";
     if (type == "video")     return t->ftp_prefix + "/ipcam";
     return t->ftp_prefix.empty() ? "/" : t->ftp_prefix;
+}
+
+// True when req.storage (from LIST_INFO) targets the volume we probed on
+// FTPS. Studio uses "" / absent for External, "internal" for Internal
+// timelapse tab, and on P2S also "emmc" / "udisk". The FTPS bridge only
+// serves one mount — requests for internal/emmc when we probed udisk must
+// not return the external listing (empty list instead).
+bool ftps_storage_matches_request(const Tunnel* t, const std::string& req_storage)
+{
+    if (req_storage.empty()) {
+        // External tab: match udisk/sdcard mounts, not a hypothetical emmc-only probe.
+        return t->storage_label != "emmc";
+    }
+    if (req_storage == "internal" || req_storage == "emmc")
+        return t->storage_label == "emmc";
+    if (req_storage == "udisk" || req_storage == "usb")
+        return t->storage_label == "udisk";
+    if (req_storage == "sdcard")
+        return t->storage_label == "sdcard";
+    return req_storage == t->storage_label;
 }
 
 // Extensions a listing should surface to Studio for a given file type.
@@ -909,11 +929,23 @@ void ftps_handle_media_ability(Tunnel* t, int sequence,
 
 void ftps_handle_list_info(Tunnel* t, int sequence, const obn::json::Value& req)
 {
-    std::string type = req.find("type").as_string();
-    std::string err  = ensure_ftp(t);
+    std::string type    = req.find("type").as_string();
+    std::string storage = req.find("storage").as_string();
+    std::string err     = ensure_ftp(t);
     if (!err.empty()) {
         auto env = make_reply_envelope(kCmdListInfo, sequence, kResStorUnavail,
                                        obn::json::Value(obn::json::Object{}));
+        push_reply(t, {make_wire_reply(env, nullptr, 0)});
+        return;
+    }
+    if (!ftps_storage_matches_request(t, storage)) {
+        log_fmt(t->logger, t->log_ctx,
+                "ctrl: LIST_INFO type=%s storage=%s not served by FTPS mount %s",
+                type.c_str(), storage.c_str(), t->storage_label.c_str());
+        obn::json::Object reply;
+        reply["file_lists"] = obn::json::Value(obn::json::Array{});
+        auto env = make_reply_envelope(kCmdListInfo, sequence, kResOK,
+                                       obn::json::Value(std::move(reply)));
         push_reply(t, {make_wire_reply(env, nullptr, 0)});
         return;
     }
