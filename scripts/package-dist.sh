@@ -12,7 +12,8 @@
 # Output: dist-out/obn-linux-x64.tar.gz
 #         dist-out/obn-linux-aarch64.tar.gz
 #         dist-out/obn-windows-x64.zip
-#         dist-out/obn-macos.tar.gz
+#         dist-out/obn-macos-arm64.tar.gz
+#         dist-out/obn-macos-x64.tar.gz
 set -eu
 
 ARTIFACTS="${1:-artifacts}"
@@ -129,21 +130,37 @@ generate_readme "Windows x64" "install.bat" \
 (cd "$OUTDIR" && zip -qr obn-windows-x64.zip obn-windows-x64/)
 echo "  -> obn-windows-x64.zip"
 
-# ── macOS ────────────────────────────────────────────────────────────────
+# ── macOS arm64 ───────────────────────────────────────────────────────────
 
-echo "Assembling obn-macos..."
-STAGE="$OUTDIR/obn-macos"
+echo "Assembling obn-macos-arm64..."
+STAGE="$OUTDIR/obn-macos-arm64"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-collect_abi_dirs "obn-macos-v*" "$STAGE"
+collect_abi_dirs "obn-macos-arm64-v*" "$STAGE"
 cp "$REPO_ROOT/packaging/install.sh" "$STAGE/"
 cp "$REPO_ROOT/packaging/install.command" "$STAGE/"
 chmod +x "$STAGE/install.sh" "$STAGE/install.command"
 write_version_file "$STAGE"
-generate_readme "macOS" "install.command" \
+generate_readme "macOS (Apple Silicon)" "install.command" \
     "Double-click install.command in Finder, or run:  ./install.sh" "$STAGE/README.txt"
-(cd "$OUTDIR" && tar czf obn-macos.tar.gz obn-macos/)
-echo "  -> obn-macos.tar.gz"
+(cd "$OUTDIR" && tar czf obn-macos-arm64.tar.gz obn-macos-arm64/)
+echo "  -> obn-macos-arm64.tar.gz"
+
+# ── macOS x64 (Intel) ────────────────────────────────────────────────────
+
+echo "Assembling obn-macos-x64..."
+STAGE="$OUTDIR/obn-macos-x64"
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+collect_abi_dirs "obn-macos-x64-v*" "$STAGE"
+cp "$REPO_ROOT/packaging/install.sh" "$STAGE/"
+cp "$REPO_ROOT/packaging/install.command" "$STAGE/"
+chmod +x "$STAGE/install.sh" "$STAGE/install.command"
+write_version_file "$STAGE"
+generate_readme "macOS (Intel)" "install.command" \
+    "Double-click install.command in Finder, or run:  ./install.sh" "$STAGE/README.txt"
+(cd "$OUTDIR" && tar czf obn-macos-x64.tar.gz obn-macos-x64/)
+echo "  -> obn-macos-x64.tar.gz"
 
 # ── Done ─────────────────────────────────────────────────────────────────
 

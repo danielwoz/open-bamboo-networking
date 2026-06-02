@@ -1,5 +1,5 @@
-# Build and test open-bamboo-networking on Linux x64 / aarch64 and on
-# Windows x64 (MSVC + vcpkg manifest).
+# Build and test open-bamboo-networking on Linux x64 / aarch64,
+# Windows x64 (MSVC + vcpkg manifest), and macOS arm64 / x64 (Intel).
 #
 # Version strategy: the plugin must report a string whose first 8 characters
 # match Bambu Studio's SLIC3R_VERSION. We therefore look up the most recent
@@ -21,7 +21,7 @@
 #   * network_plugins.json
 #   * ota/plugins/
 #
-# macOS artifacts (one set per ABI version):
+# macOS artifacts (one set per ABI version / architecture):
 #   * libbambu_networking.dylib
 #   * libBambuSource.dylib
 #   * liblive555.dylib
@@ -192,8 +192,8 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: v${{ matrix.abi }}.xx-macos
-    runs-on: macos-latest
+    name: v${{ matrix.abi }}.xx-macos-${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-latest' || 'macos-latest-large' }}
     strategy:
       fail-fast: false
       matrix:
@@ -208,6 +208,9 @@ jobs:
           - 02.06.00
           - 02.06.01
           - 02.07.00
+        arch:
+          - arm64
+          - x64
 
     steps:
       - name: Checkout
@@ -258,7 +261,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: obn-macos-v${{ matrix.abi }}.xx
+          name: obn-macos-${{ matrix.arch }}-v${{ matrix.abi }}.xx
           path: dist/
           if-no-files-found: error
 
@@ -328,11 +331,12 @@ jobs:
 
             # Extract platform from filename
             case "$name" in
-              *linux-x64*)     platform="Linux x64" ;;
-              *linux-aarch64*) platform="Linux aarch64" ;;
-              *windows-x64*)   platform="Windows x64" ;;
-              *macos*)         platform="macOS (Apple Silicon)" ;;
-              *)               platform="$name" ;;
+              *linux-x64*)       platform="Linux x64" ;;
+              *linux-aarch64*)   platform="Linux aarch64" ;;
+              *windows-x64*)     platform="Windows x64" ;;
+              *macos-arm64*)     platform="macOS (Apple Silicon)" ;;
+              *macos-x64*|*macos-intel*) platform="macOS (Intel)" ;;
+              *)                 platform="$name" ;;
             esac
 
             ROWS="${ROWS}<tr><td>${platform}</td>"

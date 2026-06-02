@@ -202,9 +202,9 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: v${{ matrix.abi }}.xx-macos
+    name: v${{ matrix.abi }}.xx-macos-${{ matrix.arch }}
     needs: [preflight]
-    runs-on: macos-latest
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-latest' || 'macos-latest-large' }}
     strategy:
       fail-fast: false
       matrix:
@@ -219,6 +219,9 @@ jobs:
           - 02.06.00
           - 02.06.01
           - 02.07.00
+        arch:
+          - arm64
+          - x64
 
     steps:
       - name: Checkout
@@ -270,7 +273,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: obn-macos-v${{ matrix.abi }}.xx
+          name: obn-macos-${{ matrix.arch }}-v${{ matrix.abi }}.xx
           path: dist/
           if-no-files-found: error
 
