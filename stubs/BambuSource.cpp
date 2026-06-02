@@ -1319,6 +1319,10 @@ void ftps_handle_task_cancel(Tunnel* t, int sequence, const obn::json::Value& re
     obn::json::Array cancelled;
     {
         std::lock_guard<std::mutex> lk(t->ctrl_mu);
+        // Cap the set so late/stale cancels from one-shot commands
+        // (LIST_INFO, FILE_DEL, etc.) that don't use CancelledGuard
+        // cannot leak memory over a very long CTRL session.
+        if (t->ctrl_cancelled.size() > 256) t->ctrl_cancelled.clear();
         for (const auto& v : tasks) {
             int seq = static_cast<int>(v.as_number());
             t->ctrl_cancelled.insert(seq);
