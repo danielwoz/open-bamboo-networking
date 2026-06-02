@@ -1,5 +1,7 @@
 # Build and test open-bamboo-networking on Linux x64 / aarch64,
-# Windows x64 (MSVC + vcpkg manifest), and macOS arm64 / x64 (Intel).
+# Windows x64 (MSVC + vcpkg manifest), and macOS arm64.
+# Intel macOS (macos-latest-large) is optional here — see BUILD_MACOS_INTEL below.
+# release.yml always builds both macOS architectures.
 #
 # Version strategy: the plugin must report a string whose first 8 characters
 # match Bambu Studio's SLIC3R_VERSION. We therefore look up the most recent
@@ -40,6 +42,11 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+# Intel macOS runners are expensive (~10x arm64). Interim builds skip them by
+# default; flip to 'true' when you need obn-macos-x64.tar.gz on GitHub Pages.
+env:
+  BUILD_MACOS_INTEL: 'false'
 
 jobs:
   build:
@@ -208,9 +215,7 @@ jobs:
           - 02.06.00
           - 02.06.01
           - 02.07.00
-        arch:
-          - arm64
-          - x64
+        arch: ${{ fromJSON(env.BUILD_MACOS_INTEL == 'true' && '["arm64","x64"]' || '["arm64"]') }}
 
     steps:
       - name: Checkout
