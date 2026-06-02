@@ -4,10 +4,7 @@
 #include <string>
 #include <functional>
 #include <map>
-
-#ifndef ABI_VERSION
-#error ABI_VERSION must be defined by the build system (see CMakeLists.txt).
-#endif
+#include <vector>
 
 extern std::string g_log_folder;
 extern std::string g_log_start_time;
@@ -106,6 +103,8 @@ namespace BBL {
 #define BAMBU_NETWORK_LIBRARY               "bambu_networking"
 #define BAMBU_NETWORK_AGENT_NAME            "bambu_network_agent"
 
+#define BAMBU_NETWORK_AGENT_VERSION         "02.07.01.xx"
+
 //iot preset type strings
 #define IOT_PRINTER_TYPE_STRING     "printer"
 #define IOT_FILAMENT_STRING         "filament"
@@ -120,7 +119,6 @@ namespace BBL {
 #define IOT_JSON_KEY_SETTING_ID         "setting_id"
 #define IOT_JSON_KEY_FILAMENT_ID        "filament_id"
 #define IOT_JSON_KEY_USER_ID            "user_id"
-#define IOT_JSON_KEY_INHERITS           "inherits"
 
 // user callbacks
 typedef std::function<void(int online_login, bool login)> OnUserLoginFn;
@@ -236,23 +234,17 @@ struct PrintParams {
     bool            task_vibration_cali;    /* vibration calibration of task */
     bool            task_layer_inspect;     /* first layer inspection of task */
     bool            task_record_timelapse;  /* record timelapse of task */
-#if ABI_VERSION >= 0x020503
     bool            task_timelapse_use_internal;
-#endif
     bool            task_use_ams;
     std::string     task_bed_type;
     std::string     extra_options;
     int             auto_bed_leveling{ 0 };
     int             auto_flow_cali{ 0 };
     int             auto_offset_cali{ 0 };
-#if ABI_VERSION >= 0x020400
     int             extruder_cali_manual_mode{ -1 };
-#endif
     bool            task_ext_change_assist;
     bool            try_emmc_print;
-#if ABI_VERSION >= 0x020701
     std::string     svc_context;
-#endif
 };
 
 struct TaskQueryParams
