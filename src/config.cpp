@@ -80,6 +80,10 @@ void apply_key(Settings& out, const std::string& key, const std::string& val)
     }
     else if (key == "block_cloud")              out.block_cloud = truthy(val);
     else if (key == "force_timelapse_external")  out.force_timelapse_external = truthy(val);
+    else if (key == "force_ftps")                out.force_ftps = truthy(val);
+    else if (key == "patch_mqtt_home_flag")        out.patch_mqtt_home_flag = truthy(val);
+    else if (key == "patch_mqtt_ipcam_file")       out.patch_mqtt_ipcam_file = truthy(val);
+    else if (key == "patch_mqtt_internal_storage") out.patch_mqtt_internal_storage = truthy(val);
     else if (key == "bambusource_log_level")     out.bambusource_log_level = val;
     else if (key == "bambusource_log_file")      out.bambusource_log_file = val;
 }
