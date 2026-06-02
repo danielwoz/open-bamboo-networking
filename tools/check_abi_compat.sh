@@ -140,7 +140,7 @@ fetch_upstream_file src/slic3r/Utils/NetworkAgent.cpp     "$WORK/live/NetworkAge
 
 grep -oE 'get_network_function\("bambu_network_[a-zA-Z_0-9]+"\)' "$WORK/live/NetworkAgent.cpp" \
     | sed -E 's/^get_network_function\("//; s/"\)$//' \
-    | sort -u > "$WORK/live/symbols.txt"
+    | LC_ALL=C sort -u > "$WORK/live/symbols.txt"
 
 normalize_bambu_net_hpp "$WORK/live/bambu_networking.hpp" "$WORK/live/bambu_networking.norm.hpp"
 
@@ -150,7 +150,7 @@ if [ "$MODE" = "refresh" ]; then
     mkdir -p "$SNAP"
     cp "$WORK/live/bambu_networking.norm.hpp" "$SNAP/bambu_networking.hpp"
     cp "$WORK/live/NetworkAgent.hpp"         "$SNAP/NetworkAgent.hpp"
-    cp "$WORK/live/symbols.txt"               "$SNAP/symbols.txt"
+    LC_ALL=C sort -u "$WORK/live/symbols.txt" > "$SNAP/symbols.txt"
     printf '%s\n' "$TAG" > "$SNAP/SOURCE_TAG"
     cat <<EOF
 check_abi_compat: refreshed $SNAP/ from $upstream_base
@@ -190,8 +190,12 @@ report_diff() {
 
 report_missing() {
     label="$1"; expected="$2"; actual="$3"; hint="$4"; mode="${5:-exact}"
-    missing=$(comm -23 "$expected" "$actual" || true)
-    extra=$(comm -13 "$expected" "$actual" || true)
+    sorted_expected="$WORK/$(basename "$expected").sorted"
+    sorted_actual="$WORK/$(basename "$actual").sorted"
+    LC_ALL=C sort -u "$expected" > "$sorted_expected"
+    LC_ALL=C sort -u "$actual" > "$sorted_actual"
+    missing=$(comm -23 "$sorted_expected" "$sorted_actual" || true)
+    extra=$(comm -13 "$sorted_expected" "$sorted_actual" || true)
     if [ -z "$missing" ] && [ -z "$extra" ]; then
         printf '  [PASS] %s\n' "$label"
         return 0
@@ -242,7 +246,7 @@ awk '
             $0 = substr($0, RSTART + RLENGTH)
         }
     }
-' "$REPO/tests/probe_plugin.cpp" | sort -u > "$WORK/probe_symbols.txt"
+' "$REPO/tests/probe_plugin.cpp" | LC_ALL=C sort -u > "$WORK/probe_symbols.txt"
 
 report_missing 'tests/probe_plugin.cpp symbol list' \
     "$SNAP/symbols.txt" "$WORK/probe_symbols.txt" \
@@ -262,12 +266,12 @@ if [ -n "$SO_PATH" ]; then
                 | awk '{print $NF}' \
                 | sed 's/^_//' \
                 | grep -E '^bambu_network_' \
-                | sort -u > "$WORK/so_symbols.txt"
+                | LC_ALL=C sort -u > "$WORK/so_symbols.txt"
         else
             nm -D --defined-only "$SO_PATH" 2>/dev/null \
                 | awk '$2=="T" || $2=="W" {print $3}' \
                 | grep -E '^bambu_network_' \
-                | sort -u > "$WORK/so_symbols.txt"
+                | LC_ALL=C sort -u > "$WORK/so_symbols.txt"
         fi
         report_missing "$(basename "$SO_PATH") exports every snapshot symbol" \
             "$SNAP/symbols.txt" "$WORK/so_symbols.txt" \
