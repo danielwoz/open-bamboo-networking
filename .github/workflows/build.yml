@@ -331,7 +331,7 @@ jobs:
               *linux-x64*)     platform="Linux x64" ;;
               *linux-aarch64*) platform="Linux aarch64" ;;
               *windows-x64*)   platform="Windows x64" ;;
-              *macos*)         platform="macOS (Apple Silicon + Intel)" ;;
+              *macos*)         platform="macOS (Apple Silicon)" ;;
               *)               platform="$name" ;;
             esac
 
