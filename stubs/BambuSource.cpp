@@ -95,6 +95,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
@@ -102,6 +103,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -723,12 +725,16 @@ void push_reply(Tunnel* t, CtrlReply r)
 // only file listing, download and whole-archive (zip) fetches work.
 // --------------------------------------------------------------------
 
-// True when the user enabled the FTPS file-transfer workaround. Read
-// from the shared obn.conf snapshot the main plugin loaded at startup
-// (config.cpp's cache is interposed across our .so and the network .so).
+// True when the user enabled the FTPS file-transfer workaround.
+// BambuSource compiles its own copy of config.cpp (self-contained .so),
+// so config::current() here returns defaults — the main plugin's
+// load_or_create never touches our static. Instead, the main plugin
+// propagates the setting via the OBN_FORCE_FTPS environment variable,
+// which is process-global.
 bool ftps_bridge_enabled()
 {
-    return obn::config::current().force_ftps;
+    const char* env = std::getenv("OBN_FORCE_FTPS");
+    return env && env[0] == '1';
 }
 
 // Builds the on-wire reply bytes Studio expects: the
@@ -985,7 +991,9 @@ void ftps_handle_sub_file(Tunnel* t, int sequence, const obn::json::Value& req)
         // source .3mf bytes unchanged, streamed in chunks. Buffer the
         // whole archive first so the LAST non-empty chunk is reliably
         // flagged continue=false even when the size is an exact multiple
-        // of the chunk boundary.
+        // of the chunk boundary. .3mf files on the printer are typically
+        // single-digit MB; the worst case is ~50-100 MB for complex
+        // multi-plate projects, which is acceptable for a transient buffer.
         std::vector<std::string> bases;
         bases.reserve(paths.size());
         for (std::size_t i = 0; i < paths.size(); ++i) {
@@ -1242,6 +1250,11 @@ void ftps_handle_file_download(Tunnel* t, int sequence,
         push_reply(t, {make_wire_reply(env, nullptr, 0)});
         return;
     }
+    // If SIZE failed (or returned 0 for a non-empty file), correct total
+    // from the actual bytes transferred so Studio's offset+size==total
+    // check fires on the final chunk and it reads file_md5.
+    std::uint64_t actual = sent + buf.size();
+    if (total == 0 || total != actual) total = actual;
     flush_chunk(/*last=*/true);
 }
 
@@ -1474,6 +1487,7 @@ void stop_ctrl_mode(Tunnel* t)
         t->ftp->quit();
         t->ftp.reset();
     }
+    t->ctrl_cancelled.clear();
     t->ctrl_mode = false;
 }
 
