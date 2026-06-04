@@ -655,17 +655,27 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     add_test(NAME config COMMAND config_test)
 
     add_executable(remote_name_test tests/remote_name_test.cpp
-        src/print_job_naming.cpp)
-    target_include_directories(remote_name_test PRIVATE include)
+        src/print_job_naming.cpp
+        src/config.cpp
+        src/lan_tls.cpp
+        src/log.cpp
+        src/os_compat.cpp)
+    target_include_directories(remote_name_test PRIVATE include ${OBN_GENERATED_DIR})
     target_compile_definitions(remote_name_test PRIVATE
         ABI_VERSION=${OBN_ABI_VERSION_HEX})
+    target_link_libraries(remote_name_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     add_test(NAME remote_name COMMAND remote_name_test)
 
     add_executable(print_url_test tests/print_url_test.cpp
-        src/print_job_naming.cpp)
-    target_include_directories(print_url_test PRIVATE include)
+        src/print_job_naming.cpp
+        src/config.cpp
+        src/lan_tls.cpp
+        src/log.cpp
+        src/os_compat.cpp)
+    target_include_directories(print_url_test PRIVATE include ${OBN_GENERATED_DIR})
     target_compile_definitions(print_url_test PRIVATE
         ABI_VERSION=${OBN_ABI_VERSION_HEX})
+    target_link_libraries(print_url_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     add_test(NAME print_url COMMAND print_url_test)
 
     add_executable(tunnel_local_test tests/tunnel_local_test.cpp
