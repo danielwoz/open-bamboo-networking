@@ -1,5 +1,7 @@
 #include "obn/print_job.hpp"
 
+#include "obn/config.hpp"
+
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -72,6 +74,11 @@ std::string strip_leading_slash(const std::string& s)
 
 bool use_brtc_cache_upload(const BBL::PrintParams& p)
 {
+    // force_ftps: the printer's native :6000 file transport is unusable, so
+    // fall back to the legacy FTPS (:990) upload path (url=ftp://…) regardless
+    // of try_emmc_print — this is how LAN print worked before the BRTC :6000
+    // protocol was added.
+    if (obn::config::current().force_ftps) return false;
     // LAN print with eMMC cache: upload .3mf via TLS :6000, then MQTT url=brtc://emmc/…
     return p.try_emmc_print;
 }
