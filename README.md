@@ -140,7 +140,9 @@ err_code: 84033543
 
 To use this plugin, put the printer in **Developer Mode**:
 
-1. On the printer: Nut icon -> Settings -> LAN Only Mode -> enable "LAN Only", "LAN Only liveview" and "Developer mode".
+1. On the printer screen, enable LAN-only mode and Developer mode. Bambu places these toggles in different submenus depending on the model and firmware — look for options named along the lines of "LAN Only", "LAN Only liveview", and "Developer mode". Examples:
+   - **P2S**: Nut icon -> Settings -> **LAN Only Mode**
+   - **P1S**: Nut icon -> **WLAN**
 2. In Bambu Studio: Device -> Connect via LAN with access code.
 
 In this mode the printer skips MQTT verification and accepts plain LAN
