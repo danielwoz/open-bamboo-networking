@@ -48,24 +48,32 @@ concurrency:
 # To enable Intel macOS in interim CI: set `if: true` on job build-macos-intel.
 
 jobs:
+  discover-abi:
+    name: Discover ABI versions
+    runs-on: ubuntu-24.04
+    outputs:
+      abi-matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: List ABI versions from abi_snapshot dirs
+        id: list
+        run: |
+          VERSIONS=$(ls -d tools/abi_snapshot/v*/ \
+            | sed 's|.*/v||; s|/$||' \
+            | jq -Rnc '[inputs]')
+          echo "matrix=$VERSIONS" >> "$GITHUB_OUTPUT"
+          echo "Discovered ABI versions: $VERSIONS"
+
   build:
     name: v${{ matrix.abi }}.xx-linux-${{ matrix.arch }}
+    needs: [discover-abi]
     runs-on: ${{ matrix.arch == 'x64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     strategy:
       fail-fast: false
       matrix:
-        abi:
-          - 02.03.00
-          - 02.03.01
-          - 02.04.00
-          - 02.05.00
-          - 02.05.01
-          - 02.05.02
-          - 02.05.03
-          - 02.06.00
-          - 02.06.01
-          - 02.07.00
-          - 02.07.01
+        abi: ${{ fromJSON(needs.discover-abi.outputs.abi-matrix) }}
         arch:
           - x64
           - aarch64
@@ -124,21 +132,12 @@ jobs:
 
   build-windows:
     name: v${{ matrix.abi }}.xx-windows-x64
+    needs: [discover-abi]
     runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
-        abi:
-          - 02.03.00
-          - 02.03.01
-          - 02.04.00
-          - 02.05.00
-          - 02.05.01
-          - 02.05.02
-          - 02.05.03
-          - 02.06.00
-          - 02.07.00
-          - 02.07.01
+        abi: ${{ fromJSON(needs.discover-abi.outputs.abi-matrix) }}
 
     steps:
       - name: Checkout
@@ -201,22 +200,12 @@ jobs:
 
   build-macos:
     name: v${{ matrix.abi }}.xx-macos-arm64
+    needs: [discover-abi]
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
-        abi:
-          - 02.03.00
-          - 02.03.01
-          - 02.04.00
-          - 02.05.00
-          - 02.05.01
-          - 02.05.02
-          - 02.05.03
-          - 02.06.00
-          - 02.06.01
-          - 02.07.00
-          - 02.07.01
+        abi: ${{ fromJSON(needs.discover-abi.outputs.abi-matrix) }}
 
     steps:
       - name: Checkout
@@ -275,22 +264,12 @@ jobs:
     name: v${{ matrix.abi }}.xx-macos-x64
     # Flip to true to enable Intel macOS interim builds (macos-latest-large).
     if: false
+    needs: [discover-abi]
     runs-on: macos-latest-large
     strategy:
       fail-fast: false
       matrix:
-        abi:
-          - 02.03.00
-          - 02.03.01
-          - 02.04.00
-          - 02.05.00
-          - 02.05.01
-          - 02.05.02
-          - 02.05.03
-          - 02.06.00
-          - 02.06.01
-          - 02.07.00
-          - 02.07.01
+        abi: ${{ fromJSON(needs.discover-abi.outputs.abi-matrix) }}
 
     steps:
       - name: Checkout

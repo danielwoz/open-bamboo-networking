@@ -27,6 +27,8 @@ jobs:
   preflight:
     name: Verify version tag
     runs-on: ubuntu-24.04
+    outputs:
+      abi-matrix: ${{ steps.list.outputs.matrix }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -54,6 +56,15 @@ jobs:
           fi
           echo "Version check passed: $TAG"
 
+      - name: List ABI versions from abi_snapshot dirs
+        id: list
+        run: |
+          VERSIONS=$(ls -d tools/abi_snapshot/v*/ \
+            | sed 's|.*/v||; s|/$||' \
+            | jq -Rnc '[inputs]')
+          echo "matrix=$VERSIONS" >> "$GITHUB_OUTPUT"
+          echo "Discovered ABI versions: $VERSIONS"
+
   build:
     name: v${{ matrix.abi }}.xx-linux-${{ matrix.arch }}
     needs: [preflight]
@@ -61,18 +72,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        abi:
-          - 02.03.00
-          - 02.03.01
-          - 02.04.00
-          - 02.05.00
-          - 02.05.01
-          - 02.05.02
-          - 02.05.03
-          - 02.06.00
-          - 02.06.01
-          - 02.07.00
-          - 02.07.01
+        abi: ${{ fromJSON(needs.preflight.outputs.abi-matrix) }}
         arch:
           - x64
           - aarch64
@@ -130,17 +130,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        abi:
-          - 02.03.00
-          - 02.03.01
-          - 02.04.00
-          - 02.05.00
-          - 02.05.01
-          - 02.05.02
-          - 02.05.03
-          - 02.06.00
-          - 02.07.00
-          - 02.07.01
+        abi: ${{ fromJSON(needs.preflight.outputs.abi-matrix) }}
 
     steps:
       - name: Checkout
@@ -210,18 +200,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        abi:
-          - 02.03.00
-          - 02.03.01
-          - 02.04.00
-          - 02.05.00
-          - 02.05.01
-          - 02.05.02
-          - 02.05.03
-          - 02.06.00
-          - 02.06.01
-          - 02.07.00
-          - 02.07.01
+        abi: ${{ fromJSON(needs.preflight.outputs.abi-matrix) }}
         arch:
           - arm64
           - x64
