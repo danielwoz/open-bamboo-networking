@@ -460,8 +460,13 @@ class LocalCtrlSession:
 
     @staticmethod
     def build_download_req(entry: FileEntry) -> dict[str, Any]:
-        """Match PrinterFileSystem::DownloadNextFile (path vs file)."""
-        if entry.path.startswith("/"):
+        """Match PrinterFileSystem::DownloadNextFile (path vs file).
+
+        mem: scheme paths (e.g. ``mem:/26``) must use ``{"path": ...}``
+        with the full scheme URI, not ``{"file": ...}`` — see
+        NETWORK_PLUGIN.md §6.14.4 and issue #52.
+        """
+        if entry.path.startswith("/") or entry.path.startswith("mem:"):
             return {"path": entry.path, "offset": 0}
         return {"file": entry.name, "offset": 0}
 
