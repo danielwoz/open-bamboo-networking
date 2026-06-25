@@ -74,8 +74,14 @@ const std::unordered_set<std::string> kKnownKeys = {
     "task_timelapse_use_internal",
 #endif
     "task_use_ams", "task_bed_type", "extra_options", "auto_bed_leveling",
-    "auto_flow_cali", "auto_offset_cali", "extruder_cali_manual_mode",
+    "auto_flow_cali", "auto_offset_cali",
+#if ABI_VERSION >= 0x020400
+    "extruder_cali_manual_mode",
+#endif
     "task_ext_change_assist", "try_emmc_print",
+#if ABI_VERSION >= 0x020701
+    "svc_context",
+#endif
 };
 
 void warn_unknown(const json& src, std::vector<std::string>& warnings)
@@ -140,9 +146,24 @@ void apply_overlay(const json& j, BBL::PrintParams& p,
     set_int   (j, "auto_bed_leveling",           p.auto_bed_leveling,           w);
     set_int   (j, "auto_flow_cali",              p.auto_flow_cali,              w);
     set_int   (j, "auto_offset_cali",            p.auto_offset_cali,            w);
+#if ABI_VERSION >= 0x020400
     set_int   (j, "extruder_cali_manual_mode",   p.extruder_cali_manual_mode,   w);
+#else
+    if (j.contains("extruder_cali_manual_mode")) {
+        w.emplace_back("'extruder_cali_manual_mode' present but ABI < 0x020400; "
+                       "skipping (rebuild plugin_runner with newer --abi)");
+    }
+#endif
     set_bool  (j, "task_ext_change_assist",      p.task_ext_change_assist,      w);
     set_bool  (j, "try_emmc_print",              p.try_emmc_print,              w);
+#if ABI_VERSION >= 0x020701
+    set_string(j, "svc_context",                 p.svc_context,                 w);
+#else
+    if (j.contains("svc_context")) {
+        w.emplace_back("'svc_context' present but ABI < 0x020701; "
+                       "skipping (rebuild plugin_runner with newer --abi)");
+    }
+#endif
 }
 
 } // namespace
