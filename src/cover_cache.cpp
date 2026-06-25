@@ -3,6 +3,7 @@
 #include "obn/log.hpp"
 #include "obn/tunnel_upload.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -12,6 +13,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -30,6 +32,11 @@ std::uint32_t fnv1a_32(const std::string& s)
 
 std::mutex                      g_inflight_mu;
 std::unordered_set<std::string> g_inflight;
+
+using SteadyClock = std::chrono::steady_clock;
+constexpr auto kNegCacheTimeout = std::chrono::seconds(60);
+
+std::unordered_map<std::string, SteadyClock::time_point> g_neg_cache;
 
 std::string inflight_key(const std::string& name, int plate, const std::string& version)
 {
@@ -69,6 +76,23 @@ bool write_atomic(const fs::path& final_path,
     return true;
 }
 
+void mark_neg_cache(const std::string& key)
+{
+    std::lock_guard<std::mutex> lk(g_inflight_mu);
+    g_neg_cache[key] = SteadyClock::now();
+}
+
+bool is_neg_cached(const std::string& key)
+{
+    auto it = g_neg_cache.find(key);
+    if (it == g_neg_cache.end()) return false;
+    if (SteadyClock::now() - it->second >= kNegCacheTimeout) {
+        g_neg_cache.erase(it);
+        return false;
+    }
+    return true;
+}
+
 void fetch_worker(obn::tunnel_upload::ConnectParams cp,
                   std::string subtask_name,
                   int         plate_idx,
@@ -84,6 +108,7 @@ void fetch_worker(obn::tunnel_upload::ConnectParams cp,
     std::string err;
     if (conn.connect(cp, &err) != 0) {
         OBN_DEBUG("cover_cache: :6000 connect %s: %s", cp.dev_ip.c_str(), err.c_str());
+        mark_neg_cache(inflight);
         return;
     }
 
@@ -92,12 +117,14 @@ void fetch_worker(obn::tunnel_upload::ConnectParams cp,
     if (!thumb.ok) {
         OBN_DEBUG("cover_cache: %s for '%s'",
                   thumb.error.c_str(), subtask_name.c_str());
+        mark_neg_cache(inflight);
         return;
     }
 
     fs::path out = path_for(subtask_name, plate_idx, version);
     if (!write_atomic(out, thumb.data)) {
         OBN_DEBUG("cover_cache: write %s failed", out.string().c_str());
+        mark_neg_cache(inflight);
         return;
     }
     OBN_INFO("cover_cache: wrote %s (%zu bytes) from %s",
@@ -161,6 +188,10 @@ void ensure(const std::string& host,
     }
 
     std::string key = inflight_key(subtask_name, plate_idx, version);
+    {
+        std::lock_guard<std::mutex> lk(g_inflight_mu);
+        if (is_neg_cached(key)) return;
+    }
     if (!claim_inflight(key)) return;
 
     obn::tunnel_upload::ConnectParams cp;
