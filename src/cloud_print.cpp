@@ -736,6 +736,9 @@ int Agent::run_cloud_print_job(const BBL::PrintParams& p,
                      "-> degrading to cloud channel");
             use_lan_channel = false;
         } else if (print_job::use_brtc_cache_upload(p)) {
+            OBN_INFO("cloud_print: upload path=brtc :6000 (try_emmc_print=%d, force_ftps=%d)",
+                     p.try_emmc_print ? 1 : 0,
+                     obn::config::current().force_ftps ? 1 : 0);
             obn::tunnel_upload::ConnectParams cp =
                 obn::tunnel_upload::connect_params_from_print(
                     p.dev_ip, p.dev_id, p.password);
@@ -760,6 +763,9 @@ int Agent::run_cloud_print_job(const BBL::PrintParams& p,
                      static_cast<unsigned long long>(outcome.bytes),
                      remote_name.c_str());
         } else {
+            OBN_INFO("cloud_print: upload path=ftps :990 (try_emmc_print=%d, force_ftps=%d)",
+                     p.try_emmc_print ? 1 : 0,
+                     obn::config::current().force_ftps ? 1 : 0);
             std::string folder = p.ftp_folder;
             if (!folder.empty() && folder.back() != '/') folder += '/';
             if (!folder.empty() && folder.front() == '/') folder.erase(0, 1);

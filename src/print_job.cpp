@@ -457,7 +457,13 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     std::string   stored_path;
     int rc = 0;
 
-    if (print_job::use_brtc_cache_upload(params)) {
+    const bool brtc = print_job::use_brtc_cache_upload(params);
+    OBN_INFO("local_print: upload path=%s (try_emmc_print=%d, force_ftps=%d)",
+             brtc ? "brtc :6000" : "ftps :990",
+             params.try_emmc_print ? 1 : 0,
+             obn::config::current().force_ftps ? 1 : 0);
+
+    if (brtc) {
         obn::tunnel_upload::ConnectParams cp =
             obn::tunnel_upload::connect_params_from_print(
                 params.dev_ip, params.dev_id, params.password);
