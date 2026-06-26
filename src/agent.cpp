@@ -955,8 +955,6 @@ bool Agent::start_discovery(bool enable, bool sending)
 {
     OBN_INFO("start_discovery enable=%d sending=%d", enable, sending);
 
-    // The existing Discovery is held under mu_; we capture the callback
-    // outside the lock to avoid holding it across the socket syscall.
     if (!enable) {
         std::unique_ptr<ssdp::Discovery> d;
         {
@@ -967,37 +965,43 @@ bool Agent::start_discovery(bool enable, bool sending)
         return false;
     }
 
-    BBL::OnMsgArrivedFn cb;
-    BBL::QueueOnMainFn  queue;
-    ssdp::Discovery*    d_ptr = nullptr;
+    // `sending` is part of the ABI but Studio never passes true in current
+    // sources (GUI_App: start_discovery(true, false); SelectMachinePopup has
+    // start_discovery(true, start) commented out). We do not implement any
+    // extra behaviour for sending=true — passive NOTIFY listen only.
+    (void)sending;
+    return ensure_ssdp_discovery_running();
+}
+
+void Agent::dispatch_ssdp_json(std::string json)
+{
+    cache_ssdp_json_for_bind(json);
+    BBL::OnMsgArrivedFn local_cb;
+    BBL::QueueOnMainFn  local_queue;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        local_cb    = on_ssdp_msg_;
+        local_queue = queue_on_main_;
+    }
+    if (!local_cb) return;
+    auto invoke = [local_cb, json = std::move(json)]() mutable {
+        local_cb(std::move(json));
+    };
+    if (local_queue) local_queue(invoke);
+    else             invoke();
+}
+
+bool Agent::ensure_ssdp_discovery_running()
+{
+    ssdp::Discovery* d_ptr = nullptr;
     {
         std::lock_guard<std::mutex> lk(mu_);
         if (!discovery_) discovery_ = std::make_unique<ssdp::Discovery>();
         d_ptr = discovery_.get();
-        cb    = on_ssdp_msg_;
-        queue = queue_on_main_;
     }
 
-    // All SSDP messages are trampolined through queue_on_main_ so that
-    // Studio's DeviceManager::on_machine_alive() mutates the UI-owned
-    // machine list only on the main thread. Without this we eventually
-    // race on_machine_alive against wx's own rendering and crash under
-    // high packet rates.
     auto on_msg = [this](std::string json) {
-        cache_ssdp_json_for_bind(json);
-        BBL::OnMsgArrivedFn local_cb;
-        BBL::QueueOnMainFn  local_queue;
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            local_cb    = on_ssdp_msg_;
-            local_queue = queue_on_main_;
-        }
-        if (!local_cb) return;
-        auto invoke = [local_cb, json = std::move(json)]() mutable {
-            local_cb(std::move(json));
-        };
-        if (local_queue) local_queue(invoke);
-        else             invoke();
+        dispatch_ssdp_json(std::move(json));
     };
 
     return d_ptr->start(2021, std::move(on_msg));
@@ -1150,34 +1154,12 @@ void Agent::cache_ssdp_json_for_bind(const std::string& json)
     ssdp_json_by_ip_[ip] = json;
 }
 
-int Agent::lookup_bind_detect(const std::string& dev_ip,
-                                BBL::detectResult& out,
-                                int                wait_ms)
+namespace {
+
+int fill_bind_detect_from_json(const std::string& json, BBL::detectResult& out)
 {
-    const std::string want = trim_ip_string(dev_ip);
-    if (want.empty()) return -1;
-
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
-    std::string json;
-    for (;;) {
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            auto it = ssdp_json_by_ip_.find(want);
-            if (it != ssdp_json_by_ip_.end()) json = it->second;
-        }
-        if (!json.empty()) break;
-        if (std::chrono::steady_clock::now() >= deadline) {
-            OBN_INFO("lookup_bind_detect: no SSDP for %s within %d ms",
-                     want.c_str(),
-                     wait_ms);
-            return -3;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-
     std::string perr;
-    auto root = obn::json::parse(json, &perr);
+    auto        root = obn::json::parse(json, &perr);
     if (!root) {
         OBN_WARN("lookup_bind_detect: bad JSON: %s", perr.c_str());
         return -1;
@@ -1197,6 +1179,54 @@ int Agent::lookup_bind_detect(const std::string& dev_ip,
         return -1;
     }
     return 0;
+}
+
+} // namespace
+
+int Agent::lookup_bind_detect(const std::string& dev_ip,
+                                BBL::detectResult& out,
+                                int                wait_ms)
+{
+    const std::string want = trim_ip_string(dev_ip);
+    if (want.empty()) return -1;
+
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = ssdp_json_by_ip_.find(want);
+        if (it != ssdp_json_by_ip_.end()) {
+            return fill_bind_detect_from_json(it->second, out);
+        }
+    }
+
+    // Studio calls bind_detect from InnerLoad before post_init() starts
+    // discovery. Start the listener ourselves and passively wait for the
+    // printer's periodic NOTIFY broadcast (stock does the same — no M-SEARCH).
+    if (!ensure_ssdp_discovery_running()) {
+        OBN_WARN("lookup_bind_detect: SSDP listener failed to start for %s",
+                 want.c_str());
+    }
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
+    std::string json;
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            auto it = ssdp_json_by_ip_.find(want);
+            if (it != ssdp_json_by_ip_.end()) json = it->second;
+        }
+        if (!json.empty()) break;
+
+        if (std::chrono::steady_clock::now() >= deadline) {
+            OBN_INFO("lookup_bind_detect: no SSDP for %s within %d ms",
+                     want.c_str(),
+                     wait_ms);
+            return -3;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    return fill_bind_detect_from_json(json, out);
 }
 
 std::string Agent::lan_access_code_for(const std::string& dev_id) const

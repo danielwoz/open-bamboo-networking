@@ -11,6 +11,11 @@
 
 namespace obn::ssdp {
 
+// Bambu printers broadcast SSDP NOTIFY on UDP :2021 every 5 s (observed).
+inline constexpr int kNotifyPeriodMs   = 5000;
+// bind_detect wait: one full period plus margin for listener startup/jitter.
+inline constexpr int kBindDetectWaitMs = 5500;
+
 // HTTP-style header bag parsed out of a NOTIFY / M-SEARCH packet. Keys are
 // lowercased so `get("usn")` matches whether the printer sent `USN` or
 // `Usn`. Values preserve the original bytes verbatim (header values from
@@ -37,11 +42,8 @@ bool parse(const char* data, std::size_t size, Headers& out);
 // throws on ::json::parse if "dev_name"/"dev_id"/... are absent).
 std::string to_device_info_json(const Headers& h);
 
-// Background UDP listener on 0.0.0.0:<port>. Bambu printers advertise
-// themselves by sending UDP broadcasts to 255.255.255.255:2021 every ~5 s
-// while also listening to the same port for M-SEARCH requests. We only
-// consume (sending=false path); sending=true is left for the day the
-// protocol requires it.
+// Background UDP listener on 0.0.0.0:<port>. Bambu printers send SSDP NOTIFY
+// to 255.255.255.255:2021 every 5 s; we only listen passively.
 class Discovery {
 public:
     using OnMessage = std::function<void(std::string json)>;

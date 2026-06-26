@@ -133,8 +133,8 @@ public:
     void install_device_cert(const std::string& dev_id, bool lan_only);
 
     // Starts/stops the LAN SSDP listener that feeds on_ssdp_msg_fn. Bambu
-    // printers advertise themselves once every ~5 s via a UDP broadcast on
-    // port 2021. Returns true if the listener is running after the call.
+    // printers send NOTIFY every 5 s on UDP port 2021. Returns true if the
+    // listener is running after the call.
     bool start_discovery(bool enable, bool sending);
 
     // Implements bambu_network_start_local_print: upload the .3mf over
@@ -433,6 +433,10 @@ private:
     BBL::OnMessageFn          on_local_message_{};
     BBL::QueueOnMainFn        queue_on_main_{};
     BBL::OnServerErrFn        server_err_{};
+
+    // SSDP helper paths shared by start_discovery() and bind_detect().
+    void dispatch_ssdp_json(std::string json);
+    bool ensure_ssdp_discovery_running();
 };
 
 // Safe cast with null guard used by every exported function. Keeps the exports

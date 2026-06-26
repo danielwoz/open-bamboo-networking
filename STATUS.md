@@ -123,7 +123,7 @@ Source: [src/abi_bind.cpp](src/abi_bind.cpp).
 | Function | Status | Notes |
 | --- | :--: | --- |
 | `bambu_network_ping_bind` | ✅ | Cloud `/iot-service/api/ping-bind` call. |
-| `bambu_network_bind_detect` | ✅ | Waits up to 4.5 s for an SSDP `NOTIFY` on UDP 2021 to learn the printer identity — same as stock, since the ABI provides no access code here either. |
+| `bambu_network_bind_detect` | ✅ | Passively waits up to 5.5 s (`ssdp::kBindDetectWaitMs`) for an SSDP NOTIFY on UDP 2021 (printers broadcast every 5 s). |
 | `bambu_network_bind` | ✅ | LAN → cloud bind flow; reports progress through `OnUpdateStatusFn`. |
 | `bambu_network_unbind` | ✅ | Cloud unbind call. |
 | `bambu_network_request_bind_ticket` | ✅ | Requests the WebView SSO ticket used by the browser bind flow. |

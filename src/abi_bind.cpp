@@ -6,6 +6,7 @@
 #include "obn/bambu_networking.hpp"
 #include "obn/bind_cloud.hpp"
 #include "obn/log.hpp"
+#include "obn/ssdp.hpp"
 
 using obn::as_agent;
 
@@ -25,10 +26,9 @@ OBN_ABI int bambu_network_bind_detect(void*       agent,
     auto* a = as_agent(agent);
     if (!a) return -1;
     OBN_INFO("bind_detect dev_ip=%s sec_link=%s", dev_ip.c_str(), sec_link.c_str());
-    // Wait ~4.5s for an SSDP NOTIFY from the printer on UDP :2021. No access
-    // code is available in this ABI — same as the stock plugin, which also
-    // discovers identity from LAN broadcast rather than MQTT here.
-    return a->lookup_bind_detect(dev_ip, detect, 4500);
+    // Starts the UDP :2021 listener if needed, then passively waits for a
+    // matching NOTIFY (see ssdp::kBindDetectWaitMs).
+    return a->lookup_bind_detect(dev_ip, detect, obn::ssdp::kBindDetectWaitMs);
 }
 
 OBN_ABI int bambu_network_bind(void*       agent,
