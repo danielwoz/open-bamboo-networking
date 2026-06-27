@@ -120,6 +120,8 @@ Please note:
 - Bambu Studio **02.06.00**._xx_
 - Bambu Studio **02.06.01**._xx_
 - Bambu Studio **02.07.00**._xx_
+- Bambu Studio **02.07.01**._xx_
+- Bambu Studio **02.08.00**._xx_
 
 Compatibility with plugin ABI depends on the first three numbers in the version number, e.g.
 any Bambu Studio v**02**.**03**.**04**._xx_ is compatible with any plugin with a version v**02**.**03**.**04**._xx_.
@@ -510,25 +512,38 @@ Then edit the configuration file.
 
 ## Configuration file
 
-Persistent plugin settings live in **`<data_dir>/obn.conf`**, in the same
-directory as `obn.log` and `obn.auth.json`. The slicer passes `data_dir` to
-`bambu_network_create_agent(log_dir)`; on first launch, if the file is missing,
-the plugin creates a template with every key and its default value.
+Advanced users can fine-tune the plugin's behavior through a
+configuration file. Available options include logging, cloud endpoint
+overrides, file transfer mode selection, and a number of low-level
+tweaks that modify MQTT traffic between the slicer and the printer —
+use those with caution, as they change what the slicer sees and may
+cause unexpected UI behavior if misconfigured.
+
+Persistent plugin settings live in **`<data_dir>/obn.conf`**, where
+`data_dir` is the slicer's configuration directory:
+
+- `~/.config/BambuStudio/` (Linux Bambu Studio)
+- `~/.config/OrcaSlicer/` (Linux Orca Slicer)
+- `%APPDATA%\BambuStudio\` (Windows Bambu Studio)
+- `%APPDATA%\OrcaSlicer\` (Windows Orca Slicer)
+
+On first launch, if the file is missing, the plugin creates a template
+with every key and its default value.
 
 **Format:** INI-like `key = value` lines. Lines starting with `#` are comments;
 `##` section headers are comments too.
 Spaces around `=` are optional.
-
-**Priority:** for each setting, **environment variables override `obn.conf`,
-which overrides built-in defaults**. Logging env vars (`OBN_LOG_*`) still win
-over the file when set.
 
 | Key | Default | Effect |
 | --- | --- | --- |
 | `log_level` | `info` | Log threshold: `trace`, `debug`, `info`, `warn`, `error`, `off`. Overridden by `OBN_LOG_LEVEL`. |
 | `log_stderr` | `1` | When `1`, copy every line to stderr with an `[obn]` prefix. Overridden by `OBN_LOG_STDERR`. |
 | `log_to_file` | `0` | When `1`, append to `<data_dir>/obn.log`. Overridden by `OBN_LOG_TO_FILE`. |
-| `log_file` | *(unset)* | Absolute path to a log file. Overridden by `OBN_LOG_FILE`. |
+| `log_file` | *(empty)* | Absolute path to a log file. Overridden by `OBN_LOG_FILE`. |
+| `bambusource_log_level` | `info` | Log threshold for BambuSource (camera/file-browser library). Overridden by `OBN_BAMBUSOURCE_LOG_LEVEL`. |
+| `bambusource_log_stderr` | `1` | Copy BambuSource log lines to stderr with `[obn-bs]` prefix. Overridden by `OBN_BAMBUSOURCE_LOG_STDERR`. |
+| `bambusource_log_to_file` | `0` | When `1`, append to `<data_dir>/obn-bambusource.log`. Overridden by `OBN_BAMBUSOURCE_LOG_TO_FILE`. |
+| `bambusource_log_file` | *(empty)* | Explicit log file path for BambuSource. Overridden by `OBN_BAMBUSOURCE_LOG_FILE`. |
 | `cloud_global_api_host` | `https://api.bambulab.com` | REST API base for non-CN accounts. |
 | `cloud_global_web_host` | `https://bambulab.com` | Web portal base for sign-in / bind UI (non-CN). |
 | `cloud_global_mqtt_host` | `us.mqtt.bambulab.com` | Cloud MQTT broker hostname (non-CN). |
@@ -538,11 +553,14 @@ over the file when set.
 | `cloud_mqtt_port` | `8883` | Cloud MQTT broker port (both regions). |
 | `block_cloud` | `1` | Block background cloud MQTT/REST connections. Auth, preset sync, and bind/unbind are still allowed. |
 | `lan_tls_skip_verify` | `0` | Skip TLS certificate verification for LAN MQTT/FTPS connections. |
+| `force_ftps` | `0` | Force FTPS (port 990) for file transfer instead of the native TLS :6000 protocol. Thumbnails, timelapse files, and internal storage (eMMC) browsing are not available in this mode. Useful when the printer's :6000 file browser is broken (e.g. some A1 firmware versions). |
+| `disable_camera_preview` | `0` | Disable the annoying static "Printer Preview" JPEG snapshot (mem:/N over TLS :6000) shown in the device panel when live view is off. |
 | `force_timelapse_external` | `0` | Always save timelapse to external storage (USB/SD), ignoring the Internal/External toggle in the print dialog (Studio defaults to internal). |
-| `bambusource_log_level` | `info` | Log threshold for BambuSource (camera/file-browser library). Overridden by `OBN_BAMBUSOURCE_LOG_LEVEL`. |
-| `bambusource_log_stderr` | `1` | Copy BambuSource log lines to stderr with `[obn-bs]` prefix. Overridden by `OBN_BAMBUSOURCE_LOG_STDERR`. |
-| `bambusource_log_to_file` | `0` | When `1`, append to `<data_dir>/obn-bambusource.log`. Overridden by `OBN_BAMBUSOURCE_LOG_TO_FILE`. |
-| `bambusource_log_file` | *(empty)* | Explicit log file path for BambuSource. Overridden by `OBN_BAMBUSOURCE_LOG_FILE`. |
+| `mqtt_keep_connection` | `1` | Keep the MQTT connection alive across the slicer's internal disconnect/reconnect cycles (e.g. after sending a print job). Avoids 5-30s reconnection delays on printers with limited MQTT session slots. Useful for Orca Slicer. |
+| `override_lan_ip` | `0` | Replace the printer's self-reported LAN IP in push_status with the IP used in connect_printer. Enable for NAT / port-forwarding setups where the printer advertises its internal address. |
+| `patch_mqtt_home_flag` | `0` | Rewrite home_flag SD-card bits from NO_SDCARD to HAS_SDCARD. Useful on some A-series where Studio greys out storage UI even though USB storage works. |
+| `patch_mqtt_ipcam_file` | `0` | Inject `ipcam.file` block into push_status when firmware omits it. Without this, Studio may refuse to open the file browser on some models. |
+| `patch_mqtt_internal_storage` | `0` | Set the internal storage capability bit so Studio shows the eMMC tab in the file browser. |
 
 Example — enable a persistent log file without env vars:
 

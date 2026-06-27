@@ -10,6 +10,18 @@ log_stderr = 1
 log_to_file = 0
 log_file =
 
+
+# --- BambuSource logging --------------------------------------------
+#
+# Logging for the BambuSource library (camera liveview / file browser).
+# Same pattern as the main plugin: stderr by default, file on demand.
+# Env vars (OBN_BAMBUSOURCE_LOG_*) override these when set.
+
+bambusource_log_level = info
+bambusource_log_stderr = 1
+bambusource_log_to_file = 0
+bambusource_log_file =
+
 # --- Cloud endpoints (Global) --------------------------------------
 #
 # Used when country_code is not CN.
@@ -53,9 +65,10 @@ force_timelapse_external = 0
 # --- File transfer --------------------------------------------------
 #
 # Force FTPS (port 990) for file listing and transfer instead of the
-# native TLS :6000 CTRL protocol.  Thumbnails are not available in
-# this mode.  Useful as a workaround when the printer's :6000 file
-# browser is broken (e.g. some A1 firmware versions).
+# native TLS :6000 CTRL protocol.  Thumbnails, timelapse files, and
+# internal storage (eMMC) browsing are not available in this mode.
+# Useful as a workaround when the printer's :6000 file browser is
+# broken (e.g. some A1 firmware versions).
 
 force_ftps = 0
 
@@ -76,10 +89,11 @@ disable_camera_preview = 0
 # Useful for Orca Slicer, which reconnects to the printer after
 # every print, causing a 5-30s delay on printers with limited
 # MQTT session slots (A1 Mini, P1S, etc.).
+# Useful for Orca Slicer.
 
 mqtt_keep_connection = 1
 
-# --- LAN IP override --------------------------------------------------
+# --- MQTT push_status patches ---------------------------------------
 #
 # Replace the printer's self-reported LAN IP in MQTT push_status with the
 # IP you used to connect.  Enable this when you access the printer through
@@ -95,8 +109,6 @@ mqtt_keep_connection = 1
 
 override_lan_ip = 0
 
-# --- MQTT push_status patches ---------------------------------------
-#
 # Patch incoming MQTT push_status fields on the fly. All disabled by
 # default. Enable only if your printer needs it.
 #
@@ -124,14 +136,3 @@ patch_mqtt_ipcam_file = 0
 # be slow or unreliable (e.g. on P2S) — enable only if you need the tab.
 
 patch_mqtt_internal_storage = 0
-
-# --- BambuSource logging --------------------------------------------
-#
-# Logging for the BambuSource library (camera liveview / file browser).
-# Same pattern as the main plugin: stderr by default, file on demand.
-# Env vars (OBN_BAMBUSOURCE_LOG_*) override these when set.
-
-bambusource_log_level = info
-bambusource_log_stderr = 1
-bambusource_log_to_file = 0
-bambusource_log_file =
