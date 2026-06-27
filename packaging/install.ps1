@@ -1,4 +1,4 @@
-# Open Bamboo Networking — interactive installer for Windows.
+﻿# Open Bamboo Networking -- interactive installer for Windows.
 # Ships inside the distribution archive next to lib\vXX.XX.XX\ directories.
 # Detects the slicer, matches the ABI version, copies binaries, patches
 # the slicer conf, and registers the DirectShow filter.
@@ -22,7 +22,7 @@ function Wait-And-Exit {
     exit $code
 }
 
-# ── Client selection ─────────────────────────────────────────────────────
+# -- Client selection ------------------------------------------------------
 
 Write-Host ""
 Write-Host "Open Bamboo Networking - Installer" -ForegroundColor White
@@ -93,7 +93,7 @@ if (-not (Test-Path $ConfPath)) {
     Wait-And-Exit
 }
 
-# ── ABI version detection ────────────────────────────────────────────────
+# -- ABI version detection -------------------------------------------------
 
 function Detect-VersionFromConf {
     param([string]$ConfPath, [string]$Key)
@@ -174,7 +174,7 @@ if ($detected -match '^(\d+\.\d+\.\d+)') {
 }
 $PluginVer = "$AbiPrefix.99"
 
-# ── Match available ABI directory ────────────────────────────────────────
+# -- Match available ABI directory -----------------------------------------
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LibDir = Join-Path $ScriptDir "lib"
@@ -203,7 +203,7 @@ if (-not $MatchedDir) {
         Write-Err "(often the legacy 01.10.01.x entry). In Orca Slicer open:"
         Write-Err "  Preferences -> Online -> Network plug-in -> Network plug-in version"
         Write-Err "and select one of the supported versions listed above (e.g. 02.03.00 or"
-        Write-Err "newer — not the legacy line). Restart Orca if prompted, then re-run"
+        Write-Err "newer -- not the legacy line). Restart Orca if prompted, then re-run"
         Write-Err "this installer."
     } else {
         Write-Err "You may need a newer distribution package from GitHub."
@@ -214,7 +214,7 @@ if (-not $MatchedDir) {
 $MatchedVer = (Split-Path -Leaf $MatchedDir) -replace '^v', ''
 $PluginVer = "$MatchedVer.99"
 
-# ── Confirmation ─────────────────────────────────────────────────────────
+# -- Confirmation ---------------------------------------------------------
 
 $DestDir = Join-Path $Prefix "plugins"
 
@@ -233,7 +233,7 @@ if ($confirm -match '^[Nn]') {
 }
 Write-Host ""
 
-# ── Install binaries ─────────────────────────────────────────────────────
+# -- Install binaries -----------------------------------------------------
 
 New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
 
@@ -285,7 +285,7 @@ if ($Client -eq "bambu_studio") {
     }
 }
 
-# ── Patch slicer conf ────────────────────────────────────────────────────
+# -- Patch slicer conf ----------------------------------------------------
 
 if (Test-Path $ConfPath) {
     try {
@@ -351,7 +351,7 @@ if (Test-Path $ConfPath) {
     Wait-And-Exit
 }
 
-# ── Register DirectShow filter ───────────────────────────────────────────
+# -- Register DirectShow filter -------------------------------------------
 
 $bsDll = Join-Path $DestDir "BambuSource.dll"
 if (Test-Path $bsDll) {
@@ -367,7 +367,7 @@ if (Test-Path $bsDll) {
     }
 }
 
-# ── Summary ──────────────────────────────────────────────────────────────
+# -- Summary --------------------------------------------------------------
 
 $ObnConf = Join-Path $Prefix "obn.conf"
 
