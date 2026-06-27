@@ -30,6 +30,7 @@ plugin.
 - [Manual installation](#manual-installation)
 - [Logging](#logging)
   - [`libBambuSource.so` logging](#libbambusourceso-logging)
+- [Known issues](#known-issues)
 - [License](#license)
 - [Support the Developer and the Project](#support-the-developer-and-the-project)
 
@@ -666,6 +667,16 @@ successful `rtsp: PLAY ok` the issue is slicer-side: on Linux, missing
 GStreamer H.264 decoder (`gstreamer1.0-plugins-bad` /
 `gstreamer1.0-libav`); on Windows, missing H.264 MFT (Media Feature
 Pack on N/KN editions).
+
+## Known issues
+
+- **No current-print thumbnail in Orca Slicer.** The plugin provides
+  the model cover during printing via `bambu_network_get_subtask_info`,
+  but Orca Slicer routes that call through its own `OrcaCloudServiceAgent`
+  (a stub returning empty JSON) instead of `BBLCloudServiceAgent` which
+  delegates to the plugin. The thumbnail URL never reaches the UI, so the
+  Device panel shows a placeholder. This cannot be fixed on the plugin
+  side; a patch to Orca Slicer is needed. Works correctly in Bambu Studio.
 
 ## License
 
