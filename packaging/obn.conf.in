@@ -79,6 +79,22 @@ disable_camera_preview = 0
 
 mqtt_keep_connection = 1
 
+# --- LAN IP override --------------------------------------------------
+#
+# Replace the printer's self-reported LAN IP in MQTT push_status with the
+# IP you used to connect.  Enable this when you access the printer through
+# NAT / port forwarding: without it, the slicer sees the printer's
+# internal address (e.g. 192.168.1.100) and fails to open the camera
+# or file browser from outside the LAN.
+#
+# Example NAT setup:
+#   1. Forward ports 8883, 990, 6000 and 322 on your router to the printer.
+#   2. In the slicer, connect using your public IP (or DDNS hostname).
+#   3. Set override_lan_ip = 1 here so the camera and file browser also
+#      use the public IP instead of the printer's internal address.
+
+override_lan_ip = 0
+
 # --- MQTT push_status patches ---------------------------------------
 #
 # Patch incoming MQTT push_status fields on the fly. All disabled by

@@ -44,6 +44,12 @@ struct Settings {
     // 5-30s reconnection delay.  Enabled by default to work around this.
     bool mqtt_keep_connection        = true;
 
+    // Replace the LAN IP reported by the printer in push_status with the
+    // IP used in connect_printer.  Needed for NAT / port-forwarding setups
+    // where the printer advertises its internal LAN address but the slicer
+    // must reach it via a different (public) IP.
+    bool override_lan_ip             = false;
+
     // MQTT push_status patches (all off by default)
     bool patch_mqtt_home_flag        = false;
     bool patch_mqtt_ipcam_file       = false;

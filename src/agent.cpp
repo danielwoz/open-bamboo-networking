@@ -463,6 +463,52 @@ bool patch_string_zero_to(std::string&       payload,
     return false;
 }
 
+// override_lan_ip: replace every "ip":<int64> inside the "net":{"info":[…]}
+// block with an int64 encoding of the connect_printer IP.  Studio parses
+// this field into MachineObject::dev_ip which then feeds the camera URL;
+// when accessing the printer through NAT the firmware reports its internal
+// LAN address, breaking camera/file-browser from outside the LAN.
+bool try_override_net_ip(std::string& payload, const std::string& connect_ip)
+{
+    if (connect_ip.empty()) return false;
+
+    // Convert dotted-quad to the little-endian int64 Studio expects.
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    if (std::sscanf(connect_ip.c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) != 4)
+        return false;
+    long long ip_int = static_cast<long long>(a)
+                     | (static_cast<long long>(b) << 8)
+                     | (static_cast<long long>(c) << 16)
+                     | (static_cast<long long>(d) << 24);
+    std::string ip_str = std::to_string(ip_int);
+
+    static const std::string kIpKey = "\"ip\":";
+    bool touched = false;
+
+    // Find the "net" object.
+    std::size_t net_pos = payload.find("\"net\":");
+    if (net_pos == std::string::npos) return false;
+
+    // Scan forward for every "ip": inside the net block and replace.
+    std::size_t search_from = net_pos;
+    for (;;) {
+        std::size_t pos = payload.find(kIpKey, search_from);
+        if (pos == std::string::npos) break;
+        std::size_t i = pos + kIpKey.size();
+        while (i < payload.size() && payload[i] == ' ') ++i;
+        // Parse existing integer value.
+        std::size_t num_start = i;
+        if (i < payload.size() && payload[i] == '-') ++i;
+        while (i < payload.size() && payload[i] >= '0' && payload[i] <= '9') ++i;
+        if (i == num_start) { search_from = i; continue; }
+
+        payload.replace(num_start, i - num_start, ip_str);
+        search_from = num_start + ip_str.size();
+        touched = true;
+    }
+    return touched;
+}
+
 // FNV-1a 32-bit - deterministic across platforms and C++ runtimes, so
 // Studio always computes the same synthetic subtask id for a given
 // subtask name even across plugin rebuilds.
@@ -539,6 +585,7 @@ static void update_fw_state(Agent::DeviceFw* dev, const std::string& payload);
 void Agent::notify_local_message(const std::string& dev_id, const std::string& json)
 {
     BBL::OnMessageFn cb;
+    std::string connect_ip;
     {
         // Per Studio's NetworkAgent wiring, local MQTT report messages go to
         // on_local_message_. We intentionally do not marshal through
@@ -546,6 +593,7 @@ void Agent::notify_local_message(const std::string& dev_id, const std::string& j
         // based on the JSON content (some update paths are fast-path).
         std::lock_guard<std::mutex> lk(mu_);
         cb = on_local_message_;
+        if (lan_session_) connect_ip = lan_session_->dev_ip();
     }
 
     std::string patched = json;
@@ -558,6 +606,7 @@ void Agent::notify_local_message(const std::string& dev_id, const std::string& j
         if (cfg.patch_mqtt_home_flag)        try_rewrite_home_flag(patched);
         if (cfg.patch_mqtt_ipcam_file)       try_inject_ipcam_file_local(patched);
         if (cfg.patch_mqtt_internal_storage) try_patch_fun2_internal_storage(patched);
+        if (cfg.override_lan_ip)             try_override_net_ip(patched, connect_ip);
     }
 
     // Per-print token used to invalidate the cover cache when the user

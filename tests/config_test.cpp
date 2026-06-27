@@ -157,6 +157,7 @@ static int test_new_keys()
                "force_ftps = 1\n"
                "disable_camera_preview = 1\n"
                "mqtt_keep_connection = yes\n"
+               "override_lan_ip = yes\n"
                "patch_mqtt_home_flag = yes\n"
                "patch_mqtt_ipcam_file = true\n"
                "patch_mqtt_internal_storage = 1\n"
@@ -170,6 +171,7 @@ static int test_new_keys()
     CHECK(cfg.force_ftps == true);
     CHECK(cfg.disable_camera_preview == true);
     CHECK(cfg.mqtt_keep_connection == true);
+    CHECK(cfg.override_lan_ip == true);
     CHECK(cfg.patch_mqtt_home_flag == true);
     CHECK(cfg.patch_mqtt_ipcam_file == true);
     CHECK(cfg.patch_mqtt_internal_storage == true);
@@ -190,6 +192,7 @@ static int test_new_keys_defaults()
     CHECK(cfg.force_ftps == false);
     CHECK(cfg.disable_camera_preview == false);
     CHECK(cfg.mqtt_keep_connection == true);
+    CHECK(cfg.override_lan_ip == false);
     CHECK(cfg.patch_mqtt_home_flag == false);
     CHECK(cfg.patch_mqtt_ipcam_file == false);
     CHECK(cfg.patch_mqtt_internal_storage == false);
