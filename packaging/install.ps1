@@ -95,87 +95,6 @@ if (-not (Test-Path $ConfPath)) {
 
 # -- ABI version detection -------------------------------------------------
 
-function Detect-VersionFromConf {
-    param([string]$ConfPath, [string]$Key)
-    if (-not (Test-Path $ConfPath)) { return "" }
-    $line = Select-String -Path $ConfPath `
-        -Pattern "`"$Key`"\s*:\s*`"([0-9][0-9.]*)`"" `
-        -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($line -and $line.Matches.Count -gt 0 -and $line.Matches[0].Groups.Count -ge 2) {
-        return $line.Matches[0].Groups[1].Value
-    }
-    return ""
-}
-
-function Detect-VersionFromExe {
-    param([string]$Name)
-    $regPaths = @(
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
-    )
-    $entries = Get-ItemProperty -Path $regPaths -ErrorAction SilentlyContinue |
-               Where-Object { $_.DisplayName -eq $Name }
-    foreach ($e in $entries) {
-        $exe = $null
-        if ($e.DisplayIcon) {
-            $candidate = ($e.DisplayIcon -split ',')[0].Trim('"')
-            if (Test-Path $candidate) { $exe = $candidate }
-        }
-        if (-not $exe -and $e.InstallLocation) {
-            $base = ([System.IO.Path]::GetFileNameWithoutExtension($Name).ToLower() -replace ' ','-')
-            $candidate = Join-Path $e.InstallLocation ($base + '.exe')
-            if (Test-Path $candidate) { $exe = $candidate }
-        }
-        if ($exe) {
-            $fv = (Get-Item $exe).VersionInfo.FileVersion
-            if ($fv -match '^\d+(\.\d+){2,3}$') {
-                return $fv
-            }
-        }
-    }
-    return ""
-}
-
-$confVer = Detect-VersionFromConf -ConfPath $ConfPath -Key $VersionKey
-$exeVer  = Detect-VersionFromExe -Name $DisplayName
-
-$detected = ""
-$detectedSource = ""
-if (-not [string]::IsNullOrEmpty($exeVer)) {
-    $detected = $exeVer
-    $detectedSource = "$ClientLabel v$detected"
-} elseif (-not [string]::IsNullOrEmpty($confVer)) {
-    $detected = $confVer
-    if ($Client -eq "orca_slicer") {
-        $detectedSource = "$ClientLabel $VersionKey $detected"
-    } else {
-        $detectedSource = "$ClientLabel v$detected"
-    }
-} elseif ($Client -eq "orca_slicer") {
-    $detected = "02.03.00"
-    $detectedSource = "default"
-    Write-Warn "No $VersionKey found -- defaulting to $detected"
-}
-
-if ([string]::IsNullOrEmpty($detected)) {
-    Write-Err "Cannot determine ABI version."
-    Write-Err "Launch $ClientLabel at least once, then re-run this installer."
-    Wait-And-Exit
-}
-
-# Extract major.minor.patch
-if ($detected -match '^(\d+\.\d+\.\d+)') {
-    $AbiPrefix = $Matches[1]
-} else {
-    Write-Err "Cannot parse version: $detected"
-    Wait-And-Exit
-}
-$PluginVer = "$AbiPrefix.99"
-
-# -- Match available ABI directory -----------------------------------------
-
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LibDir = Join-Path $ScriptDir "lib"
 
@@ -183,6 +102,87 @@ if (-not (Test-Path $LibDir)) {
     Write-Err "lib\ directory not found next to this script"
     Wait-And-Exit
 }
+
+if ($Client -eq "orca_slicer") {
+    # Orca Slicer: always use 02.03.00 ABI (the version Orca ships by default).
+    # The installer patches OrcaSlicer.conf to match, so the user does not need
+    # to pick a specific network_plugin_version in Preferences.
+    $AbiPrefix = "02.03.00"
+    $detectedSource = "fixed"
+} else {
+    # Bambu Studio: detect from exe version in the registry.
+    function Detect-VersionFromConf {
+        param([string]$ConfPath, [string]$Key)
+        if (-not (Test-Path $ConfPath)) { return "" }
+        $line = Select-String -Path $ConfPath `
+            -Pattern "`"$Key`"\s*:\s*`"([0-9][0-9.]*)`"" `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($line -and $line.Matches.Count -gt 0 -and $line.Matches[0].Groups.Count -ge 2) {
+            return $line.Matches[0].Groups[1].Value
+        }
+        return ""
+    }
+
+    function Detect-VersionFromExe {
+        param([string]$Name)
+        $regPaths = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        )
+        $entries = Get-ItemProperty -Path $regPaths -ErrorAction SilentlyContinue |
+                   Where-Object { $_.DisplayName -eq $Name }
+        foreach ($e in $entries) {
+            $exe = $null
+            if ($e.DisplayIcon) {
+                $candidate = ($e.DisplayIcon -split ',')[0].Trim('"')
+                if (Test-Path $candidate) { $exe = $candidate }
+            }
+            if (-not $exe -and $e.InstallLocation) {
+                $base = ([System.IO.Path]::GetFileNameWithoutExtension($Name).ToLower() -replace ' ','-')
+                $candidate = Join-Path $e.InstallLocation ($base + '.exe')
+                if (Test-Path $candidate) { $exe = $candidate }
+            }
+            if ($exe) {
+                $fv = (Get-Item $exe).VersionInfo.FileVersion
+                if ($fv -match '^\d+(\.\d+){2,3}$') {
+                    return $fv
+                }
+            }
+        }
+        return ""
+    }
+
+    $confVer = Detect-VersionFromConf -ConfPath $ConfPath -Key $VersionKey
+    $exeVer  = Detect-VersionFromExe -Name $DisplayName
+
+    $detected = ""
+    if (-not [string]::IsNullOrEmpty($exeVer)) {
+        $detected = $exeVer
+        $detectedSource = "$ClientLabel v$detected"
+    } elseif (-not [string]::IsNullOrEmpty($confVer)) {
+        $detected = $confVer
+        $detectedSource = "$ClientLabel v$detected"
+    }
+
+    if ([string]::IsNullOrEmpty($detected)) {
+        Write-Err "Cannot determine ABI version."
+        Write-Err "Launch $ClientLabel at least once, then re-run this installer."
+        Wait-And-Exit
+    }
+
+    if ($detected -match '^(\d+\.\d+\.\d+)') {
+        $AbiPrefix = $Matches[1]
+    } else {
+        Write-Err "Cannot parse version: $detected"
+        Wait-And-Exit
+    }
+}
+
+$PluginVer = "$AbiPrefix.99"
+
+# -- Match available ABI directory -----------------------------------------
 
 $MatchedDir = $null
 $candidate = Join-Path $LibDir "v$AbiPrefix"
@@ -197,17 +197,7 @@ if (-not $MatchedDir) {
     if (-not $available) { $available = "none" }
     Write-Err "No compatible ABI version for $detectedSource (need $AbiPrefix)."
     Write-Err "Available in this package: $available"
-    if ($Client -eq "orca_slicer") {
-        Write-Err ""
-        Write-Err "Orca is configured for a network plug-in ABI this package does not ship"
-        Write-Err "(often the legacy 01.10.01.x entry). In Orca Slicer open:"
-        Write-Err "  Preferences -> Online -> Network plug-in -> Network plug-in version"
-        Write-Err "and select one of the supported versions listed above (e.g. 02.03.00 or"
-        Write-Err "newer -- not the legacy line). Restart Orca if prompted, then re-run"
-        Write-Err "this installer."
-    } else {
-        Write-Err "You may need a newer distribution package from GitHub."
-    }
+    Write-Err "You may need a newer distribution package from GitHub."
     Wait-And-Exit
 }
 

@@ -161,65 +161,53 @@ fi
 
 # ── ABI version detection ────────────────────────────────────────────────
 
-CONF_FILE="$PREFIX/$CONF_NAME"
-if [ ! -f "$CONF_FILE" ]; then
-    die "$CONF_NAME not found at $CONF_FILE
-  Launch $CLIENT_LABEL at least once to create its config, then re-run this installer."
-fi
-
-DETECTED_VER=$(sed -n \
-    "s/^[[:space:]]*\"${VERSION_KEY}\"[[:space:]]*:[[:space:]]*\"\([0-9][0-9.]*\)\".*/\1/p" \
-    "$CONF_FILE" | head -n1)
-
-DETECTED_SOURCE=""
-if [ -n "$DETECTED_VER" ]; then
-    case "$CLIENT" in
-        orca_slicer) DETECTED_SOURCE="$CLIENT_LABEL $VERSION_KEY $DETECTED_VER" ;;
-        *)           DETECTED_SOURCE="$CLIENT_LABEL v$DETECTED_VER" ;;
-    esac
-fi
-
-if [ -z "$DETECTED_VER" ] && [ "$CLIENT" = "orca_slicer" ]; then
-    DETECTED_VER="02.03.00"
-    DETECTED_SOURCE="default"
-    warn "No $VERSION_KEY in $CONF_FILE — defaulting to $DETECTED_VER"
-fi
-
-if [ -z "$DETECTED_VER" ]; then
-    die "Cannot determine ABI version: key \"$VERSION_KEY\" not found in $CONF_FILE."
-fi
-
-# Extract major.minor.patch (first 3 components)
-ABI_PREFIX=$(echo "$DETECTED_VER" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
-PLUGIN_VER="${ABI_PREFIX}.99"
-
-# ── Match available ABI directory ────────────────────────────────────────
-
 LIB_DIR="$SCRIPT_DIR/lib"
 if [ ! -d "$LIB_DIR" ]; then
     die "lib/ directory not found next to this script"
 fi
 
+CONF_FILE="$PREFIX/$CONF_NAME"
+
+if [ "$CLIENT" = "orca_slicer" ]; then
+    # Orca Slicer: always use 02.03.00 ABI (the version Orca ships by default).
+    # The installer patches OrcaSlicer.conf to match, so the user does not need
+    # to pick a specific network_plugin_version in Preferences.
+    ABI_PREFIX="02.03.00"
+    DETECTED_SOURCE="fixed"
+else
+    # Bambu Studio: detect version from slicer conf.
+    if [ ! -f "$CONF_FILE" ]; then
+        die "$CONF_NAME not found at $CONF_FILE
+  Launch $CLIENT_LABEL at least once to create its config, then re-run this installer."
+    fi
+
+    DETECTED_VER=$(sed -n \
+        "s/^[[:space:]]*\"${VERSION_KEY}\"[[:space:]]*:[[:space:]]*\"\([0-9][0-9.]*\)\".*/\1/p" \
+        "$CONF_FILE" | head -n1)
+
+    if [ -n "$DETECTED_VER" ]; then
+        DETECTED_SOURCE="$CLIENT_LABEL v$DETECTED_VER"
+    fi
+
+    if [ -z "$DETECTED_VER" ]; then
+        die "Cannot determine ABI version: key \"$VERSION_KEY\" not found in $CONF_FILE."
+    fi
+
+    # Extract major.minor.patch (first 3 components)
+    ABI_PREFIX=$(echo "$DETECTED_VER" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+fi
+
+PLUGIN_VER="${ABI_PREFIX}.99"
+
+# ── Match available ABI directory ────────────────────────────────────────
+
 MATCHED_DIR="$LIB_DIR/v${ABI_PREFIX}"
 
 if [ ! -d "$MATCHED_DIR" ]; then
     AVAILABLE=$(ls -d "$LIB_DIR"/v*/ 2>/dev/null | xargs -I{} basename {} | sed 's/^v//' | tr '\n' ' ')
-    ERR_MSG="No compatible ABI version for $DETECTED_SOURCE (need ${ABI_PREFIX}).
-  Available in this package: ${AVAILABLE:-none}"
-    if [ "$CLIENT" = "orca_slicer" ]; then
-        ERR_MSG="${ERR_MSG}
-
-  Orca is configured for a network plug-in ABI this package does not ship
-  (often the legacy 01.10.01.x entry). In Orca Slicer open:
-    Preferences -> Online -> Network plug-in -> Network plug-in version
-  and select one of the supported versions listed above (e.g. 02.03.00 or
-  newer — not the legacy line). Restart Orca if prompted, then re-run
-  this installer."
-    else
-        ERR_MSG="${ERR_MSG}
+    die "No compatible ABI version for $DETECTED_SOURCE (need ${ABI_PREFIX}).
+  Available in this package: ${AVAILABLE:-none}
   You may need a newer distribution package from GitHub."
-    fi
-    die "$ERR_MSG"
 fi
 
 MATCHED_VER=$(basename "$MATCHED_DIR" | sed 's/^v//')
