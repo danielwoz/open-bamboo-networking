@@ -44,6 +44,7 @@
 #include "obn/log.hpp"
 #include "obn/print_job.hpp"
 #include "obn/print_params_ftp_prefs.hpp"
+#include "obn/signing.hpp"
 #include "obn/tunnel_upload.hpp"
 
 #include <algorithm>
@@ -535,15 +536,25 @@ int create_task(const std::string& api, const std::string& token,
     req.body    = body;
     req.timeout_s = 60;
 
+    // /my/task requires two request-specific signing headers.
+    // x-bbl-app-certification-id identifies the slicer certificate;
+    // x-bbl-device-security-sign is an RSA-SHA256 signature over the
+    // request body using the slicer's private key (same key used for
+    // MQTT envelope signing). When no slicer key is loaded the headers
+    // are omitted and the request soft-fails (see below).
+    std::string cid = obn::signing::slicer_cert_id();
+    if (!cid.empty()) {
+        req.headers["x-bbl-app-certification-id"] = cid;
+        try {
+            req.headers["x-bbl-device-security-sign"] =
+                obn::signing::sign_bytes(body);
+        } catch (const std::exception& ex) {
+            OBN_WARN("cloud_print: create_task sign failed: %s", ex.what());
+        }
+    }
+
     auto resp = obn::http::perform(req);
 
-    // /my/task is the MakerWorld task-history endpoint. The stock
-    // plugin authenticates it with two request-specific headers
-    // (`x-bbl-app-certification-id` + `x-bbl-device-security-sign`)
-    // backed by a per-installation client cert we don't have access
-    // to. When those are missing, Cloudflare/WAF returns 403 with an
-    // empty body *before* the request reaches the API handler.
-    //
     // The task record is NOT required for the printer to start the
     // job; the MQTT `project_file` command below does that. So: if
     // the call is rejected, log it, synthesize a dummy task_id ("0",

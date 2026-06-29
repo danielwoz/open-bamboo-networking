@@ -333,4 +333,9 @@ std::string sign_bytes(const std::string& data)
         reinterpret_cast<const unsigned char*>(data.data()), data.size());
 }
 
+std::string slicer_cert_id()
+{
+    return cert_id();
+}
+
 } // namespace obn::signing

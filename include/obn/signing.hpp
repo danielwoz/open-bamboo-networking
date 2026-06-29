@@ -16,4 +16,8 @@ std::string maybe_sign(const std::string& payload_json,
 // Used to compute x-bbl-device-security-sign for REST requests.
 std::string sign_bytes(const std::string& data);
 
+// Returns the cert_id string that identifies the slicer's signing certificate.
+// Empty if no key is loaded. Used to populate x-bbl-app-certification-id.
+std::string slicer_cert_id();
+
 } // namespace obn::signing
