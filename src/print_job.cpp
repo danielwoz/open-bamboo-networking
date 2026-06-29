@@ -432,6 +432,17 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     if (update_fn) update_fn(BBL::PrintingStageCreate, 0, "");
     if (cancel_fn && cancel_fn()) return BAMBU_NETWORK_ERR_CANCELED;
 
+    // Plate normalisation: rewrite plate_0 → plate_1 inside the 3MF ZIP
+    // in-place BEFORE upload so the printer receives a correct archive.
+    // Fail-closed: if the rewrite errors, refuse the print rather than
+    // pushing a half-written archive. BBS-style spools are unchanged (no-op).
+    if (!print_job::normalise_orca_plate_to_one(params.filename)) {
+        if (update_fn) update_fn(BBL::PrintingStageERROR,
+                                 BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED,
+                                 "plate normalisation failed");
+        return BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED;
+    }
+
     // Stock plugin parity: when `ftp_folder` is empty (which it always
     // is — Studio never assigns m_ftp_folder anywhere in the public
     // tree, see `3rd_party/BambuStudio/src/slic3r/GUI/Jobs/PrintJob.cpp`)
@@ -448,7 +459,11 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     std::string remote_folder = params.ftp_folder;
     if (!remote_folder.empty() && remote_folder.back() != '/') remote_folder += '/';
     if (!remote_folder.empty() && remote_folder.front() == '/') remote_folder.erase(0, 1);
-    std::string remote_name = print_job::pick_remote_name(params);
+    // Normalise plate_0→plate_1 in the remote filename so the STOR target
+    // and the project_file url= field reference plate_1, matching the
+    // rewritten archive entries.
+    std::string remote_name = print_job::to_print_basename(
+                                  print_job::pick_remote_name(params));
     std::string remote_path = "/" + remote_folder + remote_name;
 
     std::string ca_file = bambu_ca_bundle_path();
@@ -626,6 +641,15 @@ int Agent::run_send_gcode_to_sdcard(const BBL::PrintParams& params,
     }
 
     if (update_fn) update_fn(BBL::PrintingStageCreate, 0, "");
+
+    // Plate normalisation before upload (no-op on BBS-style spools).
+    if (!params.filename.empty() &&
+        !print_job::normalise_orca_plate_to_one(params.filename)) {
+        if (update_fn) update_fn(BBL::PrintingStageERROR,
+                                 BAMBU_NETWORK_ERR_PRINT_SG_UPLOAD_FTP_FAILED,
+                                 "plate normalisation failed");
+        return BAMBU_NETWORK_ERR_PRINT_SG_UPLOAD_FTP_FAILED;
+    }
 
     std::string remote_name = print_job::dest_name_for_send_gcode(params);
     if (remote_name.empty()) {

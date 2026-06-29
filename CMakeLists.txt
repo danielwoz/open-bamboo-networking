@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(open-bamboo-networking
     VERSION 0.1.0
     DESCRIPTION "Open Bamboo Networking — open-source replacement for Bambu Studio's bambu_networking plugin"
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 
 # Vendored mosquitto pulls cJSON via FetchContent; released cJSON tags still
@@ -257,6 +257,19 @@ endif()
 # zlib is shared between BambuSource (FTPS fallback: client-side ZIP
 # extract for file-browser thumbnails) and other zlib users in the tree.
 
+# Vendored miniz — public domain (unlicense), used by print_job_plate_norm.cpp
+# for in-place 3MF ZIP rewrite. Compiled as a thin static object library so
+# the C source stays isolated from the CXX-only project build rules.
+add_library(obn_miniz STATIC third_party/miniz/miniz.c)
+target_include_directories(obn_miniz PUBLIC third_party)
+set_target_properties(obn_miniz PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# Suppress warnings from vendored code.
+if(MSVC)
+    target_compile_options(obn_miniz PRIVATE /w)
+else()
+    target_compile_options(obn_miniz PRIVATE -w)
+endif()
+
 add_library(bambu_networking SHARED
     src/abi_meta.cpp
     src/abi_lifecycle.cpp
@@ -297,6 +310,7 @@ add_library(bambu_networking SHARED
     src/os_compat.cpp
     src/print_job.cpp
     src/print_job_naming.cpp
+    src/print_job_plate_norm.cpp
     src/ssdp.cpp
     src/tunnel_local.cpp
     src/tunnel_upload.cpp
@@ -324,6 +338,7 @@ target_compile_definitions(bambu_networking PRIVATE
 target_link_libraries(bambu_networking PRIVATE
     obn_mosquitto_iface
     obn_curl_iface
+    obn_miniz
     OpenSSL::SSL
     OpenSSL::Crypto
     ZLIB::ZLIB
