@@ -37,6 +37,7 @@
 #include "obn/agent.hpp"
 
 #include "obn/bambu_networking.hpp"
+#include "obn/cert_store.hpp"
 #include "obn/cloud_auth.hpp"
 #include "obn/config.hpp"
 #include "obn/http_client.hpp"
@@ -45,6 +46,12 @@
 #include "obn/print_job.hpp"
 #include "obn/print_params_ftp_prefs.hpp"
 #include "obn/tunnel_upload.hpp"
+
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
+#include <openssl/x509.h>
 
 #include <algorithm>
 #include <chrono>
@@ -66,6 +73,126 @@ namespace {
 std::string json_escape(const std::string& in)
 {
     return obn::json::escape(in);
+}
+
+// ---------------------------------------------------------------------------
+// RSA field encryption helpers (cloud project_file url_enc / param_enc).
+// ---------------------------------------------------------------------------
+
+// Inline base64 encoder (no newlines, RFC-4648).
+static std::string base64_encode(const unsigned char* data, std::size_t len)
+{
+    static const char tbl[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    std::size_t i = 0;
+    while (i + 2 < len) {
+        std::uint32_t w = (std::uint32_t(data[i]) << 16)
+                        | (std::uint32_t(data[i + 1]) << 8)
+                        |  std::uint32_t(data[i + 2]);
+        out.push_back(tbl[(w >> 18) & 0x3f]);
+        out.push_back(tbl[(w >> 12) & 0x3f]);
+        out.push_back(tbl[(w >>  6) & 0x3f]);
+        out.push_back(tbl[ w        & 0x3f]);
+        i += 3;
+    }
+    if (i + 1 == len) {
+        std::uint32_t w = std::uint32_t(data[i]) << 16;
+        out.push_back(tbl[(w >> 18) & 0x3f]);
+        out.push_back(tbl[(w >> 12) & 0x3f]);
+        out.push_back('=');
+        out.push_back('=');
+    } else if (i + 2 == len) {
+        std::uint32_t w = (std::uint32_t(data[i]) << 16)
+                        | (std::uint32_t(data[i + 1]) << 8);
+        out.push_back(tbl[(w >> 18) & 0x3f]);
+        out.push_back(tbl[(w >> 12) & 0x3f]);
+        out.push_back(tbl[(w >>  6) & 0x3f]);
+        out.push_back('=');
+    }
+    return out;
+}
+
+// Encrypts `plaintext` with RSA-PKCS#1 v1.5 using the public key embedded in
+// the PEM X.509 certificate at `pem_path`. Returns the base64-encoded
+// ciphertext, or an empty string on failure (with a message in `*err`).
+//
+// Uses the EVP_PKEY_* API exclusively (deprecated RSA_* functions avoided).
+// PKCS#1 v1.5 padding is mandatory: the printer firmware uses RSA encryption
+// (not signing), and empirical captures confirm PKCS#1 v1.5, NOT OAEP.
+static std::string rsa_pkcs1v15_encrypt_b64(const std::string& pem_path,
+                                             const std::string& plaintext,
+                                             std::string*       err)
+{
+    // Load the X.509 certificate.
+    FILE* f = std::fopen(pem_path.c_str(), "r");
+    if (!f) {
+        if (err) *err = "cannot open cert PEM: " + pem_path;
+        return {};
+    }
+    X509* cert = ::PEM_read_X509(f, nullptr, nullptr, nullptr);
+    std::fclose(f);
+    if (!cert) {
+        unsigned long ecode = ::ERR_peek_last_error();
+        char ebuf[256];
+        ::ERR_error_string_n(ecode, ebuf, sizeof(ebuf));
+        if (err) *err = std::string("PEM_read_X509 failed (") + ebuf + "): " + pem_path;
+        return {};
+    }
+
+    // Extract the public key from the certificate.
+    EVP_PKEY* pkey = ::X509_get_pubkey(cert);
+    ::X509_free(cert);
+    if (!pkey) {
+        if (err) *err = "X509_get_pubkey failed for: " + pem_path;
+        return {};
+    }
+
+    EVP_PKEY_CTX* ctx = ::EVP_PKEY_CTX_new(pkey, nullptr);
+    ::EVP_PKEY_free(pkey);
+    if (!ctx) {
+        if (err) *err = "EVP_PKEY_CTX_new failed";
+        return {};
+    }
+
+    bool setup_ok = (::EVP_PKEY_encrypt_init(ctx) > 0) &&
+                    (::EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PADDING) > 0);
+    if (!setup_ok) {
+        ::EVP_PKEY_CTX_free(ctx);
+        unsigned long ecode = ::ERR_peek_last_error();
+        char ebuf[256];
+        ::ERR_error_string_n(ecode, ebuf, sizeof(ebuf));
+        if (err) *err = std::string("encrypt init/padding failed: ") + ebuf;
+        return {};
+    }
+
+    const auto* pt    = reinterpret_cast<const unsigned char*>(plaintext.data());
+    std::size_t ptlen = plaintext.size();
+
+    // Query required output buffer size.
+    std::size_t outlen = 0;
+    if (::EVP_PKEY_encrypt(ctx, nullptr, &outlen, pt, ptlen) <= 0) {
+        ::EVP_PKEY_CTX_free(ctx);
+        unsigned long ecode = ::ERR_peek_last_error();
+        char ebuf[256];
+        ::ERR_error_string_n(ecode, ebuf, sizeof(ebuf));
+        if (err) *err = std::string("EVP_PKEY_encrypt size query failed: ") + ebuf;
+        return {};
+    }
+
+    std::vector<unsigned char> ct(outlen);
+    if (::EVP_PKEY_encrypt(ctx, ct.data(), &outlen, pt, ptlen) <= 0) {
+        ::EVP_PKEY_CTX_free(ctx);
+        unsigned long ecode = ::ERR_peek_last_error();
+        char ebuf[256];
+        ::ERR_error_string_n(ecode, ebuf, sizeof(ebuf));
+        if (err) *err = std::string("EVP_PKEY_encrypt failed: ") + ebuf;
+        return {};
+    }
+    ::EVP_PKEY_CTX_free(ctx);
+
+    return base64_encode(ct.data(), outlen);
 }
 
 // Reads the whole file into memory. The print-ready 3mf is typically
@@ -812,7 +939,51 @@ int Agent::run_cloud_print_job(const BBL::PrintParams& p,
         opts.file_path = remote_name;
         opts.url       = main_upload_url;
     }
-    std::string mqtt_json = print_job::build_project_file_json(p, opts);
+
+    // Build the MQTT project_file payload. Cloud prints (both LAN-channel and
+    // cloud-channel) require url_enc / param_enc — RSA-PKCS#1 v1.5 encrypted
+    // to the printer's public key — instead of plaintext url / param. Without
+    // this the firmware rejects the command with "mqtt message verify failed".
+    //
+    // The printer's RSA public key is extracted from the TLS leaf certificate
+    // captured by install_device_cert() and stored at
+    // <config_dir>/certs/<dev_id>.pem.  If the cert hasn't been captured yet
+    // (e.g. the printer was never connected on LAN), we fail early rather than
+    // sending a plaintext payload the firmware will reject anyway.
+    std::string mqtt_json;
+    {
+        std::string pem_path = cert_store::device_cert_path(config_dir(), p.dev_id);
+
+        // The `param` plaintext is the plate-gcode entrypoint inside the 3mf.
+        std::string plate_param = "Metadata/plate_" +
+            std::to_string(p.plate_index <= 0 ? 1 : p.plate_index) + ".gcode";
+
+        std::string enc_err;
+        std::string url_enc   = rsa_pkcs1v15_encrypt_b64(pem_path, opts.url,   &enc_err);
+        std::string param_enc = rsa_pkcs1v15_encrypt_b64(pem_path, plate_param, &enc_err);
+
+        if (url_enc.empty() || param_enc.empty()) {
+            OBN_ERROR("cloud_print: RSA field encryption failed (%s); "
+                      "cert=%s  Ensure install_device_cert() has run for dev=%s",
+                      enc_err.c_str(), pem_path.c_str(), p.dev_id.c_str());
+            if (update_fn) update_fn(BBL::PrintingStageERROR,
+                                     BAMBU_NETWORK_ERR_CONNECTION_TO_PRINTER_FAILED,
+                                     "RSA field encryption failed: " + enc_err);
+            return BAMBU_NETWORK_ERR_CONNECTION_TO_PRINTER_FAILED;
+        }
+
+        print_job::CloudProjectFileOpts cloud_opts;
+        cloud_opts.url_enc    = std::move(url_enc);
+        cloud_opts.param_enc  = std::move(param_enc);
+        cloud_opts.file_path  = opts.file_path;
+        cloud_opts.md5        = opts.md5;
+        cloud_opts.project_id = opts.project_id;
+        cloud_opts.profile_id = opts.profile_id;
+        cloud_opts.task_id    = opts.task_id;
+        cloud_opts.subtask_id = opts.subtask_id;
+
+        mqtt_json = print_job::build_cloud_project_file_json(p, cloud_opts);
+    }
     OBN_DEBUG("cloud_print mqtt: %s", mqtt_json.c_str());
 
     int pub_rc = 0;

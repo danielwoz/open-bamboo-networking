@@ -76,4 +76,22 @@ struct ProjectFileOpts {
 std::string build_project_file_json(const BBL::PrintParams& p,
                                     const ProjectFileOpts&  opts);
 
+// Cloud-print variant: emits `url_enc` and `param_enc` (RSA-PKCS#1 v1.5
+// encrypted, base64-encoded) instead of the plaintext `url` / `param` fields.
+// The caller is responsible for encrypting the values before calling this
+// function (see cloud_print.cpp: rsa_pkcs1v15_encrypt_b64).
+struct CloudProjectFileOpts {
+    std::string url_enc;      // base64(RSA-PKCS1v1.5-encrypt(url))
+    std::string param_enc;    // base64(RSA-PKCS1v1.5-encrypt("Metadata/plate_N.gcode"))
+    std::string file_path;    // basename / absolute path on printer FS
+    std::string md5;
+    std::string project_id{"0"};
+    std::string profile_id{"0"};
+    std::string task_id{"0"};
+    std::string subtask_id{"0"};
+};
+
+std::string build_cloud_project_file_json(const BBL::PrintParams&    p,
+                                          const CloudProjectFileOpts& opts);
+
 } // namespace obn::print_job

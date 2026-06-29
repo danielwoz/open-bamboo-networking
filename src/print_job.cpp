@@ -401,6 +401,72 @@ std::string build_project_file_json(const BBL::PrintParams& p,
     return os.str();
 }
 
+// Cloud-print variant of build_project_file_json.
+//
+// Identical to the LAN variant except:
+//   * "param" is replaced by "param_enc" (RSA-PKCS#1 v1.5 encrypted,
+//     base64-encoded).  The plaintext would be "Metadata/plate_N.gcode".
+//   * "url"   is replaced by "url_enc"   (RSA-PKCS#1 v1.5 encrypted,
+//     base64-encoded).  The plaintext is the raw fetch URL (ftp:///, brtc://,
+//     or presigned HTTPS).
+//
+// Both encrypted values must be pre-computed by the caller (see
+// rsa_pkcs1v15_encrypt_b64 in cloud_print.cpp) using the printer's RSA
+// public key extracted from its TLS leaf certificate.
+std::string build_cloud_project_file_json(const BBL::PrintParams&    p,
+                                          const CloudProjectFileOpts& opts)
+{
+    std::string subtask  = p.project_name.empty() ? p.task_name : p.project_name;
+    std::string bed_type = p.task_bed_type.empty() ? "auto" : p.task_bed_type;
+    std::string ams_mapping = format_ams_mapping(p.ams_mapping, p.task_use_ams);
+
+    std::ostringstream os;
+    os << "{\"print\":{";
+    os << "\"sequence_id\":" << json_escape(now_seq_id());
+    os << ",\"command\":\"project_file\"";
+    // Encrypted plate-gcode entrypoint (replaces plaintext "param").
+    os << ",\"param_enc\":" << json_escape(opts.param_enc);
+    os << ",\"project_id\":" << json_escape(opts.project_id);
+    os << ",\"profile_id\":" << json_escape(opts.profile_id);
+    os << ",\"task_id\":"    << json_escape(opts.task_id);
+    os << ",\"subtask_id\":" << json_escape(opts.subtask_id);
+    os << ",\"subtask_name\":" << json_escape(subtask);
+    os << ",\"file\":" << json_escape(strip_leading_slash(opts.file_path));
+    // Encrypted fetch URL (replaces plaintext "url").
+    os << ",\"url_enc\":"  << json_escape(opts.url_enc);
+    os << ",\"md5\":"      << json_escape(opts.md5);
+    os << ",\"bed_type\":" << json_escape(bed_type);
+    os << ",\"bed_leveling\":"      << to_bool(p.task_bed_leveling);
+    os << ",\"flow_cali\":"         << to_bool(p.task_flow_cali);
+    os << ",\"vibration_cali\":"    << to_bool(p.task_vibration_cali);
+    os << ",\"layer_inspect\":"     << to_bool(p.task_layer_inspect);
+    os << ",\"timelapse\":"         << to_bool(p.task_record_timelapse);
+    os << ",\"use_ams\":"           << to_bool(p.task_use_ams);
+    os << ",\"ams_mapping\":"       << ams_mapping;
+    if (p.ams_mapping2.empty())
+        os << ",\"ams_mapping2\":[]";
+    else
+        os << ",\"ams_mapping2\":" << p.ams_mapping2;
+    if (!p.nozzle_mapping.empty())
+        os << ",\"nozzle_mapping\":" << p.nozzle_mapping;
+    os << ",\"auto_bed_leveling\":"  << p.auto_bed_leveling;
+    os << ",\"nozzle_offset_cali\":" << p.auto_offset_cali;
+#if ABI_VERSION >= 0x020400
+    if (p.extruder_cali_manual_mode >= 0)
+        os << ",\"extrude_cali_manual_mode\":" << p.extruder_cali_manual_mode;
+#endif
+    int cfg_bits = 0;
+#if ABI_VERSION >= 0x020503
+    if (p.task_timelapse_use_internal &&
+        !obn::config::current().force_timelapse_external)
+        cfg_bits |= 4;
+#endif
+    os << ",\"cfg\":\"" << cfg_bits << "\"";
+    os << ",\"extrude_cali_flag\":" << p.auto_flow_cali;
+    os << "}}";
+    return os.str();
+}
+
 } // namespace obn::print_job
 
 namespace obn {
