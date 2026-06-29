@@ -298,6 +298,7 @@ add_library(bambu_networking SHARED
     src/print_job.cpp
     src/print_job_naming.cpp
     src/ssdp.cpp
+    src/signing.cpp
     src/tunnel_local.cpp
     src/tunnel_upload.cpp
     src/tls_dial.cpp
@@ -689,6 +690,21 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     target_include_directories(tunnel_local_test PRIVATE include stubs ${OBN_GENERATED_DIR})
     target_link_libraries(tunnel_local_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     add_test(NAME tunnel_local COMMAND tunnel_local_test)
+
+    # Hermetic unit tests for obn::signing — exercises key loading, canonical
+    # JSON ordering, signature round-trip and envelope structure validation.
+    # Generates ephemeral RSA keys at runtime; no on-disk secrets required.
+    add_executable(signing_test tests/signing_test.cpp
+        src/json_lite.cpp
+        src/log.cpp
+        src/os_compat.cpp
+        src/signing.cpp)
+    target_include_directories(signing_test PRIVATE include ${OBN_GENERATED_DIR})
+    target_compile_definitions(signing_test PRIVATE
+        OBN_VERSION_STRING="${OBN_VERSION}"
+        ABI_VERSION=${OBN_ABI_VERSION_HEX})
+    target_link_libraries(signing_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    add_test(NAME signing COMMAND signing_test)
 
     add_executable(lan_live_test tests/lan_live_test.cpp
         src/agent.cpp
