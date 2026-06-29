@@ -1,12 +1,5 @@
 // Cloud print pipeline.
 //
-// Reverse-engineered from a MITM capture of Studio 02.05.02.51 + the
-// original closed-source Bambu plugin pushing a job through
-// "start_local_print_with_record" (which is what Studio picks whenever
-// the printer is reachable on the LAN and an access code is known -
-// the bare "start_print" path we still share all the HTTP plumbing
-// with, only the final delivery channel changes).
-//
 // End-to-end sequence for a single plate:
 //
 //   [A]  POST   /v1/iot-service/api/user/project                body {"name":"<job>"}
