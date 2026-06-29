@@ -73,6 +73,14 @@ public:
     int add_subscribe(const std::vector<std::string>& dev_ids);
     int del_subscribe(const std::vector<std::string>& dev_ids);
 
+    // Single-device convenience wrappers. Equivalent to add_subscribe /
+    // del_subscribe with a one-element vector. Preferred for new callers;
+    // the set of subscribed dev_ids is protected by mu_ and survives
+    // reconnects — resubscribe_all_locked_() re-issues all SUBSCRIBEs on
+    // every successful CONNACK.
+    int subscribe_device(const std::string& dev_id);
+    int unsubscribe_device(const std::string& dev_id);
+
     // Publish to device/{dev_id}/request. Returns BAMBU_NETWORK_*.
     int publish(const std::string& dev_id,
                 const std::string& json_str,
@@ -85,7 +93,10 @@ private:
     std::string request_topic_(const std::string& dev_id) const;
 
     std::string mqtt_host_() const;
-    void apply_subscriptions_locked_();
+    // Called under mu_ after every successful CONNACK: iterates subscribed_,
+    // issues SUBSCRIBE for each dev_id that is not yet in active_, and
+    // populates active_ on success.
+    void resubscribe_all_locked_();
 
     mutable std::mutex mu_;
     std::string        region_;

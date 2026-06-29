@@ -127,7 +127,7 @@ int CloudSession::start(ConnectedCb on_connected,
             {
                 std::lock_guard<std::mutex> lk(mu_);
                 active_.clear();
-                apply_subscriptions_locked_();
+                resubscribe_all_locked_();
             }
         } else {
             connected_.store(false, std::memory_order_release);
@@ -246,7 +246,7 @@ int CloudSession::add_subscribe(const std::vector<std::string>& dev_ids)
         subscribed_.insert(d);
     }
     if (connected_.load(std::memory_order_acquire)) {
-        apply_subscriptions_locked_();
+        resubscribe_all_locked_();
     }
     return BAMBU_NETWORK_SUCCESS;
 }
@@ -263,7 +263,17 @@ int CloudSession::del_subscribe(const std::vector<std::string>& dev_ids)
     return BAMBU_NETWORK_SUCCESS;
 }
 
-void CloudSession::apply_subscriptions_locked_()
+int CloudSession::subscribe_device(const std::string& dev_id)
+{
+    return add_subscribe({dev_id});
+}
+
+int CloudSession::unsubscribe_device(const std::string& dev_id)
+{
+    return del_subscribe({dev_id});
+}
+
+void CloudSession::resubscribe_all_locked_()
 {
     if (!client_) return;
     // Collect everything we need to act on into local vectors so we
