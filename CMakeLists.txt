@@ -270,6 +270,7 @@ add_library(bambu_networking SHARED
     src/abi_http.cpp
     src/abi_filament.cpp
     src/abi_camera.cpp
+    src/camera.cpp
     src/abi_makerworld.cpp
     src/abi_track.cpp
     src/abi_ft.cpp

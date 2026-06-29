@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "obn/bambu_networking.hpp"
+#include "obn/camera.hpp"
 #include "obn/cert_store.hpp"
 #include "obn/cloud_auth.hpp"
 #include "obn/cloud_session.hpp"
@@ -121,9 +122,27 @@ int Agent::connect_printer(std::string dev_id,
         });
 
     if (rc == BAMBU_NETWORK_SUCCESS) {
-        std::lock_guard<std::mutex> lk(mu_);
-        lan_access_code_by_dev_[sess_dev_id] = session->password();
-        lan_session_                         = std::move(session);
+        std::string dev_ip_snap    = session->dev_ip();
+        std::string password_snap  = session->password();
+        // Best-effort: look up the printer model from the SSDP cache so we
+        // can decide whether to start a JPEG camera session.  SSDP fires
+        // asynchronously; if no data has arrived yet the model stays empty
+        // and maybe_start_camera() is a no-op.
+        std::string ssdp_json_copy;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            auto it = ssdp_json_by_ip_.find(dev_ip_snap);
+            if (it != ssdp_json_by_ip_.end())
+                ssdp_json_copy = it->second;
+            lan_access_code_by_dev_[sess_dev_id] = password_snap;
+            lan_session_                         = std::move(session);
+        }
+        std::string model;
+        if (!ssdp_json_copy.empty()) {
+            if (auto root = obn::json::parse(ssdp_json_copy, nullptr))
+                model = root->find("dev_type").as_string();
+        }
+        maybe_start_camera(sess_dev_id, model, dev_ip_snap, password_snap);
     }
     return rc;
 }
@@ -132,13 +151,42 @@ int Agent::disconnect_printer()
 {
     print_params_set_use_ssl_for_ftp(true);
 
+    std::string dev_id_snap;
     std::unique_ptr<LanSession> session;
     {
         std::lock_guard<std::mutex> lk(mu_);
+        if (lan_session_) dev_id_snap = lan_session_->dev_id();
         session = std::move(lan_session_);
     }
     if (session) session->disconnect();
+    if (!dev_id_snap.empty()) stop_camera(dev_id_snap);
     return BAMBU_NETWORK_SUCCESS;
+}
+
+void Agent::maybe_start_camera(const std::string& dev_id,
+                               const std::string& model,
+                               const std::string& ip,
+                               const std::string& access_code)
+{
+    if (!obn::camera::is_jpeg_model(model)) {
+        OBN_DEBUG("camera: skipping %s (model '%s' not JPEG-capable)",
+                  dev_id.c_str(), model.c_str());
+        return;
+    }
+    obn::camera::JpegConfig cfg;
+    cfg.dev_id      = dev_id;
+    cfg.ip          = ip;
+    cfg.access_code = access_code;
+    std::string url = obn::camera::start_camera(cfg);
+    if (url.empty())
+        OBN_WARN("camera: start_camera failed for %s", dev_id.c_str());
+    else
+        OBN_INFO("camera: %s → %s", dev_id.c_str(), url.c_str());
+}
+
+void Agent::stop_camera(const std::string& dev_id)
+{
+    obn::camera::stop_camera(dev_id);
 }
 
 int Agent::send_message_to_printer(const std::string& dev_id,
