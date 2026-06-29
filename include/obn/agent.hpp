@@ -1,20 +1,23 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "obn/auth.hpp"
 #include "obn/bambu_networking.hpp"
+#include "obn/mqtt_client.hpp"
 
 namespace obn {
-namespace mqtt { class Client; }
 namespace ssdp { class Discovery; }
 namespace cover_server { class Server; }
 class CloudSession;
@@ -59,6 +62,15 @@ private:
     std::string report_topic_() const;
     std::string request_topic_() const;
 
+    // Creates a fresh client_ and wires all three callbacks. Called from
+    // start() and from reconnect_loop() before each reconnect attempt.
+    // Throws std::runtime_error if mosquitto_new fails.
+    void setup_client();
+
+    // Background thread: waits for on_disconnect to fire with rc!=0, then
+    // retries connect() with exponential backoff {1,2,5,10,30,30} seconds.
+    void reconnect_loop();
+
     std::string dev_id_;
     std::string dev_ip_;
     std::string username_;
@@ -69,6 +81,16 @@ private:
     std::unique_ptr<mqtt::Client> client_;
     ConnectedCb                   on_connected_;
     MessageCb                     on_message_;
+
+    // Saved at start() time; reused verbatim by every reconnect attempt.
+    mqtt::ConnectConfig connect_cfg_;
+
+    std::atomic<bool>       stopped_{false};
+    std::atomic<bool>       reconnect_wanted_{false};
+    std::atomic<int>        reconnect_attempt_{0};
+    std::mutex              reconnect_mu_;
+    std::condition_variable reconnect_cv_;
+    std::thread             reconnect_thread_;
 };
 
 // The Agent object is created per Studio call to bambu_network_create_agent().
