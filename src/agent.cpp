@@ -168,18 +168,16 @@ void Agent::maybe_start_camera(const std::string& dev_id,
                                const std::string& ip,
                                const std::string& access_code)
 {
-    if (!obn::camera::is_jpeg_model(model)) {
-        OBN_DEBUG("camera: skipping %s (model '%s' not JPEG-capable)",
-                  dev_id.c_str(), model.c_str());
-        return;
-    }
-    obn::camera::JpegConfig cfg;
-    cfg.dev_id      = dev_id;
-    cfg.ip          = ip;
-    cfg.access_code = access_code;
-    std::string url = obn::camera::start_camera(cfg);
+    obn::camera::CameraSpec spec;
+    spec.dev_id      = dev_id;
+    spec.model       = model;
+    spec.lan_ip      = ip;
+    spec.access_code = access_code;
+    // camera_url is empty: factory picks JPEG if model matches, else nullptr
+    std::string url = obn::camera::start_camera(spec);
     if (url.empty())
-        OBN_WARN("camera: start_camera failed for %s", dev_id.c_str());
+        OBN_DEBUG("camera: no camera source for %s (model='%s')",
+                  dev_id.c_str(), model.c_str());
     else
         OBN_INFO("camera: %s → %s", dev_id.c_str(), url.c_str());
 }

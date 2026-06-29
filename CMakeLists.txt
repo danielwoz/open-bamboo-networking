@@ -271,6 +271,14 @@ add_library(bambu_networking SHARED
     src/abi_filament.cpp
     src/abi_camera.cpp
     src/camera.cpp
+    src/camera/oss_agora/OssAgoraSignaling.cpp
+    src/camera/oss_agora/OssAgoraEngine.cpp
+    src/camera/oss_agora/OssAgoraBambuSource.cpp
+    src/camera/AgoraBambuSource.cpp
+    src/camera/oss_tutk/IotcClient.cpp
+    src/camera/OssTutkCameraSource.cpp
+    src/camera/JpegCameraSource.cpp
+    src/camera/CameraSourceFactory.cpp
     src/abi_makerworld.cpp
     src/abi_track.cpp
     src/abi_ft.cpp
@@ -304,7 +312,7 @@ add_library(bambu_networking SHARED
     src/tls_dial.cpp
 )
 
-target_include_directories(bambu_networking PRIVATE include ${OBN_GENERATED_DIR})
+target_include_directories(bambu_networking PRIVATE include src ${OBN_GENERATED_DIR})
 set(_obn_git_compile_defs "")
 if(OBN_GIT_COMMIT)
     list(APPEND _obn_git_compile_defs OBN_GIT_COMMIT="${OBN_GIT_COMMIT}")
