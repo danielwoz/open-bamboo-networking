@@ -34,6 +34,13 @@ std::string to_print_basename(std::string fname);
 // the caller should treat false as fatal and refuse the print.
 bool normalise_to_plate_one(const std::string& threemf_path);
 
+// Returns the plate index N of the (single) Metadata/plate_<N>.gcode entry the
+// host exported into the archive, or -1 if none/unreadable. This is the ground
+// truth for the print command's `param`, independent of the unreliable ABI
+// plate_index. The LAN print path uploads the archive untouched and points the
+// print at this plate (rewriting the archive to plate_1 desynced the internal
+// slice_info.config index and the firmware then "couldn't read the file").
+
 // Computes the printer-side filename we upload and later reference in
 // the project_file MQTT payload. Uses project_name/task_name when
 // possible and falls back to the basename of params.filename.
@@ -93,8 +100,8 @@ struct ProjectFileOpts {
 };
 
 // plate_index_override > 0 forces "param":"Metadata/plate_<override>.gcode"
-// (the LAN upload paths pass 1 because normalise_to_plate_one rewrites the
-// selected plate to plate_1). 0 (default) uses p.plate_index.
+// (the LAN upload path passes the plate index actually present in the uploaded
+// archive, from archive_plate_gcode_index()). 0 (default) uses p.plate_index.
 std::string build_project_file_json(const BBL::PrintParams& p,
                                     const ProjectFileOpts&  opts,
                                     int                     plate_index_override = 0);

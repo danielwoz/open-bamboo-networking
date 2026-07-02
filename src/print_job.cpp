@@ -282,6 +282,25 @@ bool normalise_to_plate_one(const std::string& in_path)
     return true;
 }
 
+int archive_plate_gcode_index(const std::string& in_path)
+{
+    mz_zip_archive in{};
+    if (!mz_zip_reader_init_file(&in, in_path.c_str(), 0)) {
+        OBN_WARN("plate_detect: open failed: %s", in_path.c_str());
+        return -1;
+    }
+    int found = -1;
+    const mz_uint n = mz_zip_reader_get_num_files(&in);
+    char name[512];
+    for (mz_uint i = 0; i < n; ++i) {
+        if (mz_zip_reader_get_filename(&in, i, name, sizeof(name)) == 0) continue;
+        const int gi = plate_gcode_index(std::string(name));
+        if (gi >= 0) { found = gi; break; }   // first (normally only) plate gcode
+    }
+    mz_zip_reader_end(&in);
+    return found;
+}
+
 namespace {
 
 // Strict-enough JSON string escaper. The printer firmware's parser is
@@ -660,11 +679,11 @@ std::string build_project_file_json(const BBL::PrintParams& p,
                                     const ProjectFileOpts&  opts,
                                     int                     plate_index_override)
 {
-    // plate_index_override > 0 forces a specific plate (the LAN upload paths
-    // pass 1 because normalise_to_plate_one() rewrites the selected plate to
-    // plate_1 in the uploaded archive; referencing plate_<plate_index> there
-    // would name an entry the normalised archive no longer contains). When 0,
-    // fall back to the caller-supplied plate_index (e.g. print-from-storage).
+    // plate_index_override > 0 forces a specific plate: the LAN upload path
+    // passes the plate index actually present in the uploaded archive
+    // (archive_plate_gcode_index()), because the archive is uploaded as-is with
+    // its original plate index rather than rewritten to plate_1. When 0, fall
+    // back to the caller-supplied plate_index (e.g. print-from-storage).
     const int plate = (plate_index_override > 0)
                           ? plate_index_override
                           : (p.plate_index <= 0 ? 1 : p.plate_index);
@@ -727,16 +746,23 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     if (update_fn) update_fn(BBL::PrintingStageCreate, 0, "");
     if (cancel_fn && cancel_fn()) return BAMBU_NETWORK_ERR_CANCELED;
 
-    // Plate normalisation: rewrite plate_0 → plate_1 inside the 3MF ZIP
-    // in-place BEFORE upload so the printer receives a correct archive.
-    // Fail-closed: if the rewrite errors, refuse the print rather than
-    // pushing a half-written archive. BBS-style spools are unchanged (no-op).
-    if (!print_job::normalise_to_plate_one(params.filename)) {
-        if (update_fn) update_fn(BBL::PrintingStageERROR,
-                                 BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED,
-                                 "plate normalisation failed");
-        return BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED;
+    // Do NOT rewrite the archive. The host exports the SELECTED plate as an
+    // internally-consistent unit: Metadata/plate_<N>.gcode + slice_info.config
+    // index=N + model_settings.config referencing plate N. Rewriting plate_<N>
+    // -> plate_1 renamed the plate FILES but left slice_info.config's index at
+    // N; the firmware reads that index to locate the plate, fails to reconcile
+    // it with the renamed plate_1.gcode, and reports "couldn't read the file".
+    // Instead upload the archive untouched and point the print command's `param`
+    // at the plate the archive actually carries gcode for — the ground truth,
+    // independent of the unreliable ABI plate_index.
+    int src_plate = print_job::archive_plate_gcode_index(params.filename);
+    if (src_plate <= 0) {
+        src_plate = (params.plate_index > 0) ? params.plate_index : 1;
+        OBN_WARN("local_print: no Metadata/plate_<N>.gcode in %s; falling back "
+                 "to plate_index=%d", params.filename.c_str(), src_plate);
     }
+    OBN_INFO("local_print: printing plate_%d (archive uploaded as-is, no rewrite)",
+             src_plate);
 
     // Stock plugin parity: when `ftp_folder` is empty (which it always
     // is — Studio never assigns m_ftp_folder anywhere in the public
@@ -834,10 +860,10 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
                      params.filename.c_str());
         }
     }
-    // normalise_to_plate_one() above rewrote the selected plate to plate_1 in
-    // the uploaded archive, so the print-start must reference plate_1
-    // regardless of the (unreliable) plate_index that reached the ABI.
-    std::string json = print_job::build_project_file_json(params, opts, /*plate_index_override=*/1);
+    // Point the print-start at the plate the uploaded archive actually carries
+    // gcode for (detected above), since the archive is uploaded as-is with its
+    // original plate index rather than rewritten to plate_1.
+    std::string json = print_job::build_project_file_json(params, opts, /*plate_index_override=*/src_plate);
     OBN_DEBUG("local_print mqtt: %s", json.c_str());
 
     int pub = send_message_to_printer(params.dev_id, json, /*qos=*/0);
