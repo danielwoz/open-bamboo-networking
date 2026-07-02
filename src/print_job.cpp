@@ -82,28 +82,65 @@ std::string to_print_basename(std::string fname)
 
 namespace {
 
-// Increments the last _N decimal suffix in a ZIP entry name.
-// "Metadata/plate_0.gcode" → "Metadata/plate_1.gcode"
-// Returns nm unchanged when no such suffix is found.
-static std::string bump_plate_index(const std::string& nm)
+// Returns the plate index N for a per-plate ZIP entry
+// ("Metadata/plate_<N>...", including "Metadata/plate_no_light_<N>..."),
+// or -1 when nm is not a per-plate asset.
+static int plate_asset_index(const std::string& nm)
 {
-    auto under = nm.rfind('_');
-    if (under == std::string::npos) return nm;
-    std::size_t di = under + 1, de = di;
-    while (de < nm.size() && std::isdigit(static_cast<unsigned char>(nm[de]))) ++de;
-    if (de == di) return nm;
-    int n;
-    try {
-        n = std::stoi(nm.substr(di, de - di));
-    } catch (const std::exception&) {
-        return nm; // out_of_range / invalid_argument: leave name untouched
+    static const char* kPrefixes[] = { "Metadata/plate_no_light_", "Metadata/plate_" };
+    for (const char* pfx : kPrefixes) {
+        const std::size_t pl = std::strlen(pfx);
+        if (nm.compare(0, pl, pfx) != 0) continue;
+        std::size_t di = pl, de = di;
+        while (de < nm.size() && std::isdigit(static_cast<unsigned char>(nm[de]))) ++de;
+        if (de == di) return -1;
+        try { return std::stoi(nm.substr(di, de - di)); }
+        catch (const std::exception&) { return -1; }
     }
-    return nm.substr(0, di) + std::to_string(n + 1) + nm.substr(de);
+    return -1;
 }
 
-// Applies bump_plate_index to every Metadata/ path found in the config body,
-// and increments numeric plater_id attribute values.
-static std::string bump_config_body(std::string body)
+// Returns N iff nm is exactly "Metadata/plate_<N>.gcode" (the sliced gcode
+// for a plate), else -1. Deliberately excludes plate_<N>.gcode.md5,
+// plate_<N>.json and plate_<N>*.png so a stray thumbnail can never be
+// mistaken for the presence of a plate's gcode.
+static int plate_gcode_index(const std::string& nm)
+{
+    const char* pfx = "Metadata/plate_";
+    const std::size_t pl = std::strlen(pfx);
+    if (nm.compare(0, pl, pfx) != 0) return -1;
+    std::size_t di = pl, de = di;
+    while (de < nm.size() && std::isdigit(static_cast<unsigned char>(nm[de]))) ++de;
+    if (de == di) return -1;
+    if (nm.compare(de, std::string::npos, ".gcode") != 0) return -1;
+    try { return std::stoi(nm.substr(di, de - di)); }
+    catch (const std::exception&) { return -1; }
+}
+
+// Adds `shift` to the numeric plate index in a per-plate entry name.
+// "Metadata/plate_2.gcode" (shift -1) → "Metadata/plate_1.gcode".
+// Returns nm unchanged when it isn't a per-plate asset.
+static std::string shift_plate_index(const std::string& nm, int shift)
+{
+    static const char* kPrefixes[] = { "Metadata/plate_no_light_", "Metadata/plate_" };
+    for (const char* pfx : kPrefixes) {
+        const std::size_t pl = std::strlen(pfx);
+        if (nm.compare(0, pl, pfx) != 0) continue;
+        std::size_t di = pl, de = di;
+        while (de < nm.size() && std::isdigit(static_cast<unsigned char>(nm[de]))) ++de;
+        if (de == di) return nm;
+        int n;
+        try { n = std::stoi(nm.substr(di, de - di)); }
+        catch (const std::exception&) { return nm; }
+        return nm.substr(0, di) + std::to_string(n + shift) + nm.substr(de);
+    }
+    return nm;
+}
+
+// Applies shift_plate_index to every Metadata/ path in the config body and
+// adds `shift` to numeric plater_id attribute values, so model_settings.config
+// stays consistent with the renamed plate entries.
+static std::string shift_config_body(std::string body, int shift)
 {
     std::string out;
     out.reserve(body.size() + 32);
@@ -115,7 +152,7 @@ static std::string bump_config_body(std::string body)
         while (end < body.size() && body[end] != '"' && body[end] != '<' &&
                body[end] != '>' && body[end] != '\n' && body[end] != ' ')
             ++end;
-        out += bump_plate_index(body.substr(pos, end - pos));
+        out += shift_plate_index(body.substr(pos, end - pos), shift);
         i = end;
     }
     const std::string kPV = "key=\"plater_id\" value=\"";
@@ -125,7 +162,10 @@ static std::string bump_config_body(std::string body)
         if (ve > vi) {
             try {
                 int n = std::stoi(out.substr(vi, ve - vi));
-                out.replace(vi, ve - vi, std::to_string(n + 1));
+                std::string nv = std::to_string(n + shift);
+                out.replace(vi, ve - vi, nv);
+                i = vi + nv.size();
+                continue;
             } catch (const std::exception&) {
                 // out_of_range / invalid_argument: leave value untouched
             }
@@ -145,24 +185,31 @@ bool normalise_to_plate_one(const std::string& in_path)
         return false;
     }
 
-    bool has_plate_0 = false;
-    bool has_plate_1 = false;
+    // Find which plate the archive actually carries GCODE for. The host
+    // exports the SELECTED plate only, as Metadata/plate_<N>.gcode (N may be
+    // 0, 1, 2, ...). Key off the .gcode entry specifically: a stray
+    // plate_1.png thumbnail from an unselected plate must NOT be mistaken for
+    // "already plate 1" (that masking bug made multi-plate prints upload
+    // plate_2.gcode while the printer was told to run a non-existent
+    // plate_1.gcode -> empty print, gcode_state FINISH at layer 0).
+    int  src_plate = -1;
+    bool has_plate_1_gcode = false;
     const mz_uint n_in = mz_zip_reader_get_num_files(&in);
     char name[512];
-    for (mz_uint i = 0; i < n_in && !(has_plate_0 && has_plate_1); ++i) {
+    for (mz_uint i = 0; i < n_in; ++i) {
         if (mz_zip_reader_get_filename(&in, i, name, sizeof(name)) == 0) continue;
-        const std::string nm(name);
-        if (nm.rfind("Metadata/plate_0", 0) == 0) has_plate_0 = true;
-        if (nm.rfind("Metadata/plate_1", 0) == 0) has_plate_1 = true;
+        const int gi = plate_gcode_index(std::string(name));
+        if (gi < 0) continue;
+        if (gi == 1) has_plate_1_gcode = true;
+        if (src_plate < 0) src_plate = gi;   // first (normally only) plate gcode
     }
-    if (!has_plate_0) {
+    // Nothing to do: no plate gcode at all, or it is already plate_1.
+    if (src_plate < 0 || has_plate_1_gcode || src_plate == 1) {
         mz_zip_reader_end(&in);
         return true;
     }
-    if (has_plate_1) {
-        mz_zip_reader_end(&in);
-        return true;
-    }
+
+    const int shift = 1 - src_plate;   // e.g. src_plate=2 -> shift=-1
 
     const std::string out_path = in_path + ".normalised";
     std::error_code ec;
@@ -175,35 +222,43 @@ bool normalise_to_plate_one(const std::string& in_path)
     }
 
     bool ok = true;
-    int  n_renamed = 0;
+    int  n_renamed = 0, n_dropped = 0;
     for (mz_uint i = 0; i < n_in && ok; ++i) {
         if (mz_zip_reader_get_filename(&in, i, name, sizeof(name)) == 0) continue;
         const std::string in_name(name);
+
         if (in_name == "Metadata/model_settings.config") {
             std::size_t sz = 0;
             void* data = mz_zip_reader_extract_to_heap(&in, i, &sz, 0);
             if (!data) { ok = false; break; }
-            std::string body = bump_config_body(
-                std::string(static_cast<const char*>(data), sz));
+            std::string body = shift_config_body(
+                std::string(static_cast<const char*>(data), sz), shift);
             mz_free(data);
             if (!mz_zip_writer_add_mem(&out, in_name.c_str(), body.data(), body.size(),
                                        MZ_DEFAULT_COMPRESSION)) {
                 ok = false; break;
             }
+            continue;
+        }
+
+        const int idx = plate_asset_index(in_name);
+        if (idx >= 0) {
+            const int new_idx = idx + shift;
+            // Drop assets of plates below the selected one (e.g. the stray
+            // plate_1.* thumbnails from an unselected plate) so the renamed
+            // selected plate can take the plate_1.* names without collision.
+            if (new_idx < 1) { ++n_dropped; continue; }
+            const std::string out_name = shift_plate_index(in_name, shift);
+            std::size_t sz = 0;
+            void* data = mz_zip_reader_extract_to_heap(&in, i, &sz, 0);
+            if (!data) { ok = false; break; }
+            bool added = mz_zip_writer_add_mem(&out, out_name.c_str(), data, sz,
+                                               MZ_DEFAULT_COMPRESSION);
+            mz_free(data);
+            if (!added) { ok = false; break; }
+            ++n_renamed;
         } else {
-            const std::string out_name = bump_plate_index(in_name);
-            if (out_name != in_name) {
-                std::size_t sz = 0;
-                void* data = mz_zip_reader_extract_to_heap(&in, i, &sz, 0);
-                if (!data) { ok = false; break; }
-                bool added = mz_zip_writer_add_mem(&out, out_name.c_str(), data, sz,
-                                                   MZ_DEFAULT_COMPRESSION);
-                mz_free(data);
-                if (!added) { ok = false; break; }
-                ++n_renamed;
-            } else {
-                if (!mz_zip_writer_add_from_zip_reader(&out, &in, i)) { ok = false; break; }
-            }
+            if (!mz_zip_writer_add_from_zip_reader(&out, &in, i)) { ok = false; break; }
         }
     }
 
@@ -222,7 +277,8 @@ bool normalise_to_plate_one(const std::string& in_path)
         std::filesystem::remove(out_path, ec);
         return false;
     }
-    OBN_INFO("plate_norm: rewrote %s (entries renamed=%d)", in_path.c_str(), n_renamed);
+    OBN_INFO("plate_norm: mapped plate_%d -> plate_1 in %s (renamed=%d dropped=%d)",
+             src_plate, in_path.c_str(), n_renamed, n_dropped);
     return true;
 }
 
@@ -601,11 +657,18 @@ std::string build_project_file_json_impl(const BBL::PrintParams& p,
 } // namespace
 
 std::string build_project_file_json(const BBL::PrintParams& p,
-                                    const ProjectFileOpts&  opts)
+                                    const ProjectFileOpts&  opts,
+                                    int                     plate_index_override)
 {
-    std::string plate_param = "Metadata/plate_" +
-                              std::to_string(p.plate_index <= 0 ? 1 : p.plate_index) +
-                              ".gcode";
+    // plate_index_override > 0 forces a specific plate (the LAN upload paths
+    // pass 1 because normalise_to_plate_one() rewrites the selected plate to
+    // plate_1 in the uploaded archive; referencing plate_<plate_index> there
+    // would name an entry the normalised archive no longer contains). When 0,
+    // fall back to the caller-supplied plate_index (e.g. print-from-storage).
+    const int plate = (plate_index_override > 0)
+                          ? plate_index_override
+                          : (p.plate_index <= 0 ? 1 : p.plate_index);
+    std::string plate_param = "Metadata/plate_" + std::to_string(plate) + ".gcode";
     return build_project_file_json_impl(
         p, opts,
         ",\"param\":" + json_escape(plate_param),
@@ -771,7 +834,10 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
                      params.filename.c_str());
         }
     }
-    std::string json = print_job::build_project_file_json(params, opts);
+    // normalise_to_plate_one() above rewrote the selected plate to plate_1 in
+    // the uploaded archive, so the print-start must reference plate_1
+    // regardless of the (unreliable) plate_index that reached the ABI.
+    std::string json = print_job::build_project_file_json(params, opts, /*plate_index_override=*/1);
     OBN_DEBUG("local_print mqtt: %s", json.c_str());
 
     int pub = send_message_to_printer(params.dev_id, json, /*qos=*/0);
