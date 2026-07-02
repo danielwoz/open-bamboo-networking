@@ -21,12 +21,17 @@ namespace obn::print_job {
 // Slicer wrote a plate_0 file.
 std::string to_print_basename(std::string fname);
 
-// Rewrite a 3MF ZIP archive in-place: rename Metadata/plate_0.* entries
-// to Metadata/plate_1.*, patch model_settings.config path references,
-// and bump plater_id "0"→"1". No-op when the archive already contains
-// plate_1.gcode or lacks plate_0.gcode (BBS-style spools pass through
-// unchanged). Returns false only on I/O or ZIP errors — the caller
-// should treat false as fatal and refuse the print.
+// Rewrite a 3MF ZIP archive in-place so the SELECTED plate becomes plate_1:
+// find the single Metadata/plate_<N>.gcode the host exported, and if N != 1
+// shift every per-plate asset (plate_<N>.gcode/.gcode.md5/.json/.png,
+// plate_no_light_<N>.png) and model_settings.config plater_id/path refs by
+// (1 - N) so plate_<N>.* -> plate_1.*. Assets of lower plates (e.g. a stray
+// plate_1.png thumbnail from an unselected plate) are dropped to avoid a name
+// collision. No-op when the archive already contains plate_1.gcode or has no
+// plate gcode at all (BBS-style spools pass through unchanged). The detection
+// keys on the .gcode entry, not any plate_<N>.* asset, so a stray thumbnail
+// can't mask the need to normalise. Returns false only on I/O or ZIP errors —
+// the caller should treat false as fatal and refuse the print.
 bool normalise_to_plate_one(const std::string& threemf_path);
 
 // Computes the printer-side filename we upload and later reference in
@@ -87,8 +92,12 @@ struct ProjectFileOpts {
     std::string subtask_id{"0"};
 };
 
+// plate_index_override > 0 forces "param":"Metadata/plate_<override>.gcode"
+// (the LAN upload paths pass 1 because normalise_to_plate_one rewrites the
+// selected plate to plate_1). 0 (default) uses p.plate_index.
 std::string build_project_file_json(const BBL::PrintParams& p,
-                                    const ProjectFileOpts&  opts);
+                                    const ProjectFileOpts&  opts,
+                                    int                     plate_index_override = 0);
 
 // Cloud-print variant: emits `url_enc` and `param_enc` (RSA-PKCS#1 v1.5
 // encrypted, base64-encoded) instead of the plaintext `url` / `param` fields.
