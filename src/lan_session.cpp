@@ -52,9 +52,6 @@ LanSession::LanSession(std::string dev_id,
 LanSession::~LanSession()
 {
     disconnect();
-    // reconnect_thread_ is joined inside disconnect(); if the session was
-    // never started the thread was never spawned, so joinable() is false.
-    if (reconnect_thread_.joinable()) reconnect_thread_.join();
 }
 
 std::string LanSession::report_topic_() const
