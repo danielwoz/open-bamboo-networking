@@ -14,8 +14,8 @@
 //
 // Token persistence:
 //   SessionData holds tokens with absolute expiry timestamps.
-//   save_session() writes atomically (write-temp + rename) with mode 0600
-//   to $XDG_CONFIG_HOME/BambuStudio/session.json (or ~/.config/BambuStudio/).
+//   save_session() writes atomically (write-temp + rename) with mode 0600.
+//   Path priority: obn.conf session_path > config_dir/session.json.
 //   load_and_refresh_if_needed() is the one-call startup helper: reads the
 //   file, refreshes the access token if it is within slack_seconds of
 //   expiry, and saves the updated tokens back before returning.
@@ -112,9 +112,8 @@ struct SessionData {
 };
 
 // Default file path used by save_session() / load_session() when no
-// explicit path is supplied:
-//   $XDG_CONFIG_HOME/BambuStudio/session.json
-//   or ~/.config/BambuStudio/session.json
+// explicit path is supplied: obn.conf session_path, or
+// config_dir/session.json when empty.
 std::string default_session_path();
 
 // Promote a login / refresh AuthResult into a SessionData, computing
