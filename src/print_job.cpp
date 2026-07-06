@@ -139,6 +139,16 @@ static std::string bump_config_body(std::string body)
 
 bool normalise_to_plate_one(const std::string& in_path)
 {
+    // Only process .3mf archives; other file types (e.g. check_access_code.txt
+    // sent by Studio to verify access codes) pass through unchanged.
+    {
+        auto dot = in_path.rfind('.');
+        if (dot == std::string::npos) return true;
+        std::string ext = in_path.substr(dot);
+        for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext != ".3mf") return true;
+    }
+
     mz_zip_archive in{};
     if (!mz_zip_reader_init_file(&in, in_path.c_str(), 0)) {
         OBN_ERROR("plate_norm: open failed: %s", in_path.c_str());
