@@ -189,9 +189,9 @@ Discovery::~Discovery()
 
 bool Discovery::start(int port, OnMessage cb)
 {
+    std::lock_guard<std::mutex> start_lk(start_mu_);
+
     if (running_.load(std::memory_order_acquire)) {
-        // Already running; just update the callback so a re-binding doesn't
-        // lose messages.
         std::lock_guard<std::mutex> lk(cb_mu_);
         cb_ = std::move(cb);
         return true;
