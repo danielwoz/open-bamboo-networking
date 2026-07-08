@@ -84,6 +84,7 @@ void apply_key(Settings& out, const std::string& key, const std::string& val)
     else if (key == "force_timelapse_external")  out.force_timelapse_external = truthy(val);
     else if (key == "force_cloud_print")         out.force_cloud_print = truthy(val);
     else if (key == "force_cloud_print_lan_channel") out.force_cloud_print_lan_channel = truthy(val);
+    else if (key == "force_hybrid_print")        out.force_hybrid_print = truthy(val);
     else if (key == "force_ftps")                out.force_ftps = truthy(val);
     else if (key == "disable_camera_preview")      out.disable_camera_preview = truthy(val);
     else if (key == "mqtt_keep_connection")        out.mqtt_keep_connection = truthy(val);

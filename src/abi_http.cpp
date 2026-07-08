@@ -7,6 +7,7 @@
 #include "obn/agent.hpp"
 #include "obn/bambu_networking.hpp"
 #include "obn/auth.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/cloud_auth.hpp"
 #include "obn/config.hpp"
 #include "obn/http_client.hpp"
@@ -102,24 +103,16 @@ std::string remap_bind_payload(const std::string& raw_body,
         const auto dev_id = d.find("dev_id").as_string();
         if (out_dev_ids && !dev_id.empty()) out_dev_ids->push_back(dev_id);
         out << "\"dev_id\":"          << obn::json::escape(dev_id) << ',';
-        {
-            auto dn = d.find("dev_name");
-            out << "\"dev_name\":" << obn::json::escape(
-                !dn.is_null() ? dn.as_string() : d.find("name").as_string()) << ',';
-        }
-        {
-            auto on = d.find("dev_online");
-            const bool online = !on.is_null() ? on.as_bool() : d.find("online").as_bool();
-            out << "\"dev_online\":" << (online ? "true" : "false");
-        }
-        out << ',';
+        // Field names differ by endpoint: /user/bind uses {name, online,
+        // print_status}; /user/print (the genuine get_user_print_info endpoint)
+        // already uses Studio's {dev_name, dev_online, task_status}. Accept
+        // EITHER so this mapper is endpoint-agnostic.
+        auto pick = [&](const char* a2, const char* b2) {
+            auto v = d.find(a2); return v.is_null() ? d.find(b2) : v; };
+        out << "\"dev_name\":"        << obn::json::escape(pick("dev_name","name").as_string()) << ',';
+        out << "\"dev_online\":"      << (pick("dev_online","online").as_bool() ? "true" : "false") << ',';
         out << "\"dev_model_name\":"  << obn::json::escape(d.find("dev_model_name").as_string()) << ',';
-        {
-            auto ts = d.find("task_status");
-            out << "\"task_status\":" << obn::json::escape(
-                !ts.is_null() ? ts.as_string() : d.find("print_status").as_string());
-        }
-        out << ',';
+        out << "\"task_status\":"     << obn::json::escape(pick("task_status","print_status").as_string()) << ',';
         out << "\"dev_access_code\":" << obn::json::escape(d.find("dev_access_code").as_string());
         // Pass-through extras; Studio code paths occasionally look them up.
         if (auto v = d.find("dev_product_name"); !v.is_null())
@@ -134,41 +127,6 @@ std::string remap_bind_payload(const std::string& raw_body,
     }
     out << "]}";
     return out.str();
-}
-
-// Count devices in a /print or /bind response envelope.
-size_t count_devices(const std::string& raw_body)
-{
-    std::string perr;
-    auto root = obn::json::parse(raw_body, &perr);
-    if (!root) return 0;
-    return root->find("devices").as_array().size();
-}
-
-} // namespace
-
-namespace {
-
-bool fetch_user_print_info(obn::Agent* a,
-                           const obn::auth::Session& s,
-                           const std::string& path,
-                           obn::http::Response* out_resp,
-                           std::string* out_mapped,
-                           std::vector<std::string>* out_dev_ids)
-{
-    const std::string url = obn::cloud::api_host(a->cloud_region()) + path;
-    std::map<std::string, std::string> hdrs{
-        {"Authorization", "Bearer " + s.access_token},
-    };
-    auto resp = obn::http::get_json(url, hdrs);
-    if (out_resp) *out_resp = resp;
-    if (resp.status_code != 200 || resp.body.empty()) return false;
-
-    std::string mapped = remap_bind_payload(resp.body, out_dev_ids);
-    if (count_devices(resp.body) == 0) return false;
-
-    if (out_mapped) *out_mapped = std::move(mapped);
-    return true;
 }
 
 } // namespace
@@ -187,19 +145,18 @@ OBN_ABI int bambu_network_get_user_print_info(void* agent,
         return BAMBU_NETWORK_ERR_GET_USER_PRINTINFO_FAILED;
     }
 
-    const std::string print_path = "/v1/iot-service/api/user/print?force=true";
-    const std::string bind_path  = "/v1/iot-service/api/user/bind";
+    // Genuine get_user_print_info == GET /v1/iot-service/api/user/print?force=true
+    // with the full X-BBL identity header block (captured ground truth:
+    // BambuSlicerKeySaver docs/windows_request_order.txt). NOT /user/bind, and
+    // NOT an Authorization-only header set. Match it exactly for REST parity.
+    obn::http::Request req;
+    req.method = obn::http::Method::GET;
+    req.url    = obn::cloud::api_host(a->cloud_region())
+               + "/v1/iot-service/api/user/print?force=true";
+    req.ordered_headers = obn::bbl::identity_headers(
+        s.access_token, s.user_id, /*client_id*/true, /*content_type*/true);
 
-    obn::http::Response resp;
-    std::vector<std::string> dev_ids;
-    std::string mapped;
-    bool ok = fetch_user_print_info(a, s, print_path, &resp, &mapped, &dev_ids);
-    if (!ok) {
-        OBN_INFO("get_user_print_info: /user/print empty or failed, trying /user/bind");
-        dev_ids.clear();
-        ok = fetch_user_print_info(a, s, bind_path, &resp, &mapped, &dev_ids);
-    }
-
+    auto resp = obn::http::perform(req);
     if (http_code) *http_code = static_cast<unsigned int>(resp.status_code);
 
     if (!resp.error.empty()) {
@@ -213,11 +170,9 @@ OBN_ABI int bambu_network_get_user_print_info(void* agent,
         if (http_body) *http_body = resp.body;
         return BAMBU_NETWORK_ERR_GET_USER_PRINTINFO_FAILED;
     }
-    if (!ok) {
-        OBN_WARN("get_user_print_info: both endpoints returned no devices");
-        mapped = R"({"message":"success","devices":[]})";
-    }
 
+    std::vector<std::string> dev_ids;
+    std::string mapped = remap_bind_payload(resp.body, &dev_ids);
     OBN_INFO("get_user_print_info: mapped %zu -> %zu bytes, %zu device(s)",
              resp.body.size(), mapped.size(), dev_ids.size());
 
