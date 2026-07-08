@@ -1634,6 +1634,29 @@ std::map<std::string, std::string> Agent::cloud_api_http_headers() const
     return h;
 }
 
+obn::bbl::HeaderList Agent::cloud_api_ordered_headers(bool include_client_id,
+                                                      bool with_content_type) const
+{
+    obn::auth::Session                 s;
+    std::map<std::string, std::string> extra;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        s     = auth_store_ ? auth_store_->snapshot() : obn::auth::Session{};
+        extra = extra_http_headers_;
+    }
+    // Genuine order + casing come from identity_headers; overlay the host's
+    // actual set_extra_http_header values (real Device-ID / versions / language)
+    // where present, so the wire matches the running Studio rather than only the
+    // compiled defaults. Keys use the same X-BBL casing on both sides.
+    auto h = obn::bbl::identity_headers(s.access_token, s.user_id,
+                                        include_client_id, with_content_type);
+    for (auto& kv : h) {
+        auto it = extra.find(kv.first);
+        if (it != extra.end()) kv.second = it->second;
+    }
+    return h;
+}
+
 std::string Agent::cloud_user_id() const
 {
     std::lock_guard<std::mutex> lk(mu_);

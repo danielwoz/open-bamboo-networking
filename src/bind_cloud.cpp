@@ -18,28 +18,6 @@ std::string api_base(Agent* a)
     return obn::cloud::api_host(a->cloud_region());
 }
 
-obn::http::Response http_patch(const std::string& url,
-                                const std::string& body,
-                                const std::map<std::string, std::string>& hdrs)
-{
-    obn::http::Request r;
-    r.method = obn::http::Method::PATCH;
-    r.url    = url;
-    r.body   = body;
-    r.headers = hdrs;
-    return obn::http::perform(r);
-}
-
-obn::http::Response http_delete(const std::string& url,
-                                 const std::map<std::string, std::string>& hdrs)
-{
-    obn::http::Request r;
-    r.method = obn::http::Method::DEL;
-    r.url    = url;
-    r.headers = hdrs;
-    return obn::http::perform(r);
-}
-
 void emit(BBL::OnUpdateStatusFn& fn, BBL::BindJobStage st, int code, const std::string& msg)
 {
     if (fn) fn(static_cast<int>(st), code, msg);
@@ -79,21 +57,27 @@ std::string extract_ticket_from_json(const std::string& body)
 
 int ping_bind(Agent* agent, const std::string& ping_code)
 {
-    if (!agent || !agent->user_logged_in()) return BAMBU_NETWORK_ERR_BIND_FAILED;
-    auto hdrs = agent->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (!agent || !agent->user_logged_in()) {
         OBN_WARN("ping_bind: not logged in");
         return BAMBU_NETWORK_ERR_BIND_FAILED;
     }
 
     const std::string base = api_base(agent) + "/v1/iot-service/api/user/bind";
+    // genuine-parity: ordered headers (loop-invariant, built once). POST bind.
+    // flag unverified (no capture)
+    auto ohdrs = agent->cloud_api_ordered_headers(/*client_id*/true, /*content_type*/true);
     // The slicer plugin tries a handful of payload shapes; the cloud keeps
     // changing field names between regions/firmware generations.
     const char* keys[] = {"ping", "pin_code", "bind_pin", "code", "bind_code"};
     for (const char* k : keys) {
         std::ostringstream body;
         body << "{\"" << k << "\":" << obn::json::escape(ping_code) << "}";
-        auto resp = obn::http::post_json(base, body.str(), hdrs);
+        obn::http::Request req;
+        req.method = obn::http::Method::POST;
+        req.url    = base;
+        req.body   = body.str();
+        req.ordered_headers = ohdrs;
+        auto resp = obn::http::perform(req);
         OBN_INFO("ping_bind try key=%s http=%ld body.len=%zu",
                  k,
                  resp.status_code,
@@ -138,8 +122,7 @@ int bind_lan_to_account(Agent* agent,
     std::string dev_name = agent->device_display_name_for_ip(dev_ip);
     if (dev_name.empty()) dev_name = "Printer";
 
-    auto hdrs = agent->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (!agent->user_logged_in()) {
         emit(update_fn, BBL::LoginStageFinished, BAMBU_NETWORK_ERR_BIND_FAILED,
              "missing bearer token");
         return BAMBU_NETWORK_ERR_BIND_FAILED;
@@ -158,7 +141,13 @@ int bind_lan_to_account(Agent* agent,
        << "\"notice\":" << (improved ? "true" : "false") << '}';
 
     const std::string url = api_base(agent) + "/v1/iot-service/api/user/bind";
-    auto resp             = obn::http::post_json(url, os.str(), hdrs);
+    // genuine-parity: ordered headers. POST bind. flag unverified (no capture)
+    obn::http::Request req;
+    req.method = obn::http::Method::POST;
+    req.url    = url;
+    req.body   = os.str();
+    req.ordered_headers = agent->cloud_api_ordered_headers(/*client_id*/true, /*content_type*/true);
+    auto resp             = obn::http::perform(req);
 
     OBN_INFO("bind_lan_to_account POST /user/bind http=%ld err=%s body=%s",
              resp.status_code,
@@ -193,9 +182,13 @@ int query_bind_status(Agent* agent,
     if (!agent) return BAMBU_NETWORK_ERR_QUERY_BIND_INFO_FAILED;
     if (!agent->user_logged_in()) return BAMBU_NETWORK_ERR_QUERY_BIND_INFO_FAILED;
 
-    auto hdrs = agent->cloud_api_http_headers();
     const std::string url = api_base(agent) + "/v1/iot-service/api/user/bind";
-    auto resp             = obn::http::get_json(url, hdrs);
+    // genuine-parity: ordered headers. GET bind list. flag unverified (no capture)
+    obn::http::Request greq;
+    greq.method = obn::http::Method::GET;
+    greq.url    = url;
+    greq.ordered_headers = agent->cloud_api_ordered_headers(/*client_id*/false, /*content_type*/true);
+    auto resp             = obn::http::perform(greq);
 
     if (http_code) *http_code = static_cast<unsigned int>(resp.status_code);
     if (resp.error.empty() && resp.status_code >= 200 && resp.status_code < 300) {
@@ -240,7 +233,6 @@ int modify_printer_name(Agent* agent, const std::string& dev_id, const std::stri
 {
     if (!agent || !agent->user_logged_in())
         return BAMBU_NETWORK_ERR_MODIFY_PRINTER_NAME_FAILED;
-    auto hdrs = agent->cloud_api_http_headers();
     std::ostringstream body;
     body << '{'
          << "\"dev_id\":" << obn::json::escape(dev_id) << ','
@@ -248,7 +240,13 @@ int modify_printer_name(Agent* agent, const std::string& dev_id, const std::stri
 
     const std::string url =
         api_base(agent) + "/v1/iot-service/api/user/device/info";
-    auto resp = http_patch(url, body.str(), hdrs);
+    // genuine-parity: ordered headers. PATCH device info. flag unverified (no capture)
+    obn::http::Request req;
+    req.method = obn::http::Method::PATCH;
+    req.url    = url;
+    req.body   = body.str();
+    req.ordered_headers = agent->cloud_api_ordered_headers(/*client_id*/true, /*content_type*/true);
+    auto resp = obn::http::perform(req);
     OBN_INFO("modify_printer_name PATCH device/info http=%ld", resp.status_code);
     if (!resp.error.empty()) return BAMBU_NETWORK_ERR_MODIFY_PRINTER_NAME_FAILED;
     if (http_json_success(resp.body, resp.status_code)) return BAMBU_NETWORK_SUCCESS;
@@ -258,11 +256,15 @@ int modify_printer_name(Agent* agent, const std::string& dev_id, const std::stri
 int unbind_device(Agent* agent, const std::string& dev_id)
 {
     if (!agent || !agent->user_logged_in()) return BAMBU_NETWORK_ERR_UNBIND_FAILED;
-    auto              hdrs = agent->cloud_api_http_headers();
     const std::string url  = api_base(agent) +
                             "/v1/iot-service/api/user/bind?dev_id=" +
                             obn::http::url_encode(dev_id);
-    auto resp = http_delete(url, hdrs);
+    // genuine-parity: ordered headers. DELETE unbind. flag unverified (no capture)
+    obn::http::Request req;
+    req.method = obn::http::Method::DEL;
+    req.url    = url;
+    req.ordered_headers = agent->cloud_api_ordered_headers(/*client_id*/true, /*content_type*/true);
+    auto resp = obn::http::perform(req);
     OBN_INFO("unbind DELETE /user/bind http=%ld", resp.status_code);
     if (!resp.error.empty()) return BAMBU_NETWORK_ERR_UNBIND_FAILED;
     if (http_json_success(resp.body, resp.status_code)) return BAMBU_NETWORK_SUCCESS;
@@ -274,7 +276,9 @@ int request_web_sso_ticket(Agent* agent, std::string* ticket)
     if (ticket) ticket->clear();
     if (!agent || !agent->user_logged_in())
         return BAMBU_NETWORK_ERR_INVALID_RESULT;
-    auto hdrs = agent->cloud_api_http_headers();
+    // genuine-parity: ordered headers (loop-invariant). POST ticket.
+    // flag unverified (no capture)
+    auto post_hdrs = agent->cloud_api_ordered_headers(/*client_id*/true, /*content_type*/true);
 
     const char* attempts[] = {
         "/v1/user-service/user/ticket/web",
@@ -283,7 +287,12 @@ int request_web_sso_ticket(Agent* agent, std::string* ticket)
     };
     for (const char* path : attempts) {
         std::string url = api_base(agent) + path;
-        auto        resp = obn::http::post_json(url, "{}", hdrs);
+        obn::http::Request req;
+        req.method = obn::http::Method::POST;
+        req.url    = url;
+        req.body   = "{}";
+        req.ordered_headers = post_hdrs;
+        auto        resp = obn::http::perform(req);
         OBN_DEBUG("request_web_sso_ticket POST %s -> %ld", path, resp.status_code);
         if (resp.error.empty() && resp.status_code >= 200 && resp.status_code < 300) {
             std::string t = extract_ticket_from_json(resp.body);
@@ -296,7 +305,12 @@ int request_web_sso_ticket(Agent* agent, std::string* ticket)
     // Some builds expose a GET with no body.
     {
         std::string url = api_base(agent) + "/v1/user-service/user/ticket";
-        auto        resp = obn::http::get_json(url, hdrs);
+        // genuine-parity: ordered headers. GET ticket fallback. flag unverified (no capture)
+        obn::http::Request greq;
+        greq.method = obn::http::Method::GET;
+        greq.url    = url;
+        greq.ordered_headers = agent->cloud_api_ordered_headers(/*client_id*/false, /*content_type*/true);
+        auto        resp = obn::http::perform(greq);
         if (resp.error.empty() && resp.status_code == 200) {
             std::string t = extract_ticket_from_json(resp.body);
             if (!t.empty()) {
