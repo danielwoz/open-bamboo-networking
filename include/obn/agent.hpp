@@ -15,6 +15,7 @@
 
 #include "obn/auth.hpp"
 #include "obn/bambu_networking.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/mqtt_client.hpp"
 #include "obn/camera.hpp"
 
@@ -369,6 +370,16 @@ public:
     std::string device_display_name_for_ip(const std::string& dev_ip) const;
     // Bearer + optional Studio certification headers for api.bambulab.com.
     std::map<std::string, std::string> cloud_api_http_headers() const;
+
+    // Genuine-order twin of cloud_api_http_headers(): the X-BBL identity block as
+    // an ORDERED list (exact genuine header order + casing, for Cloudflare JA4H),
+    // overlaying any host-injected (set_extra_http_header) values. Assign to
+    // obn::http::Request::ordered_headers. Per-endpoint conditionals:
+    //   include_client_id: POSTs + single-resource GETs (task/<id>, consent);
+    //                      NOT list GETs / get_app_cert (genuine capture rule).
+    //   with_content_type: most calls; NOT get_app_cert or task/<id> GETs.
+    obn::bbl::HeaderList cloud_api_ordered_headers(
+        bool include_client_id = false, bool with_content_type = true) const;
 
     // ------------------------------------------------------------------
     // User preset cache (bambu_network_get_setting_list2 -> get_user_presets).

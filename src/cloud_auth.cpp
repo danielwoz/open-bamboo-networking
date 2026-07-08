@@ -1,6 +1,7 @@
 #include "obn/cloud_auth.hpp"
 
 #include "obn/config.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/http_client.hpp"
 #include "obn/json_lite.hpp"
 #include "obn/log.hpp"
@@ -370,10 +371,16 @@ ProfileResult get_profile(const std::string& region,
                           const std::string& access_token)
 {
     ProfileResult r;
-    std::map<std::string, std::string> hdrs{
-        {"Authorization", "Bearer " + access_token},
-    };
-    auto resp = obn::http::get_json(api_host(region) + "/v1/user-service/my/profile", hdrs);
+    // genuine-parity: full identity block in genuine order. This is a free
+    // function (no Agent/user_id here), so Client-ID is omitted -- matching the
+    // genuine /my/profile GET (a passive fetch). Content-Type kept per the
+    // genuine list-GET pattern. flag inferred (no direct capture for /my/profile).
+    obn::http::Request req;
+    req.method = obn::http::Method::GET;
+    req.url    = api_host(region) + "/v1/user-service/my/profile";
+    req.ordered_headers = obn::bbl::identity_headers(access_token, /*user_id*/"",
+                                                     /*client_id*/false, /*content_type*/true);
+    auto resp = obn::http::perform(req);
     r.http_status = resp.status_code;
     r.raw_body    = resp.body;
     if (!resp.error.empty()) {

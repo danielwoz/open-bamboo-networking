@@ -263,19 +263,23 @@ int list(Agent* a, const std::string& bundle_version, std::vector<Meta>* out)
     if (!a || !out) return BAMBU_NETWORK_ERR_INVALID_HANDLE;
     out->clear();
 
-    auto hdrs = a->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (!a->user_logged_in()) {
         return BAMBU_NETWORK_ERR_GET_SETTING_LIST_FAILED;
     }
-    // GET doesn't need Content-Type; some backends 415 if present.
-    hdrs.erase("Content-Type");
 
     std::string url = settings_base(a) + "?public=false";
     if (!bundle_version.empty()) {
         url += "&version=" + obn::http::url_encode(bundle_version);
     }
 
-    auto resp = obn::http::get_json(url, hdrs);
+    // genuine-parity: ordered headers. GET settings list. Content-Type=true to
+    // match the genuine list-GET pattern (print/tasks/filament/v2 all send it).
+    // flag inferred (no capture for slicer/setting).
+    obn::http::Request greq;
+    greq.method = obn::http::Method::GET;
+    greq.url    = url;
+    greq.ordered_headers = a->cloud_api_ordered_headers(/*client_id*/false, /*content_type*/true);
+    auto resp = obn::http::perform(greq);
     OBN_INFO("cloud_presets::list http=%ld bytes=%zu",
              resp.status_code, resp.body.size());
     if (!resp.error.empty() || resp.status_code < 200 || resp.status_code >= 300) {
@@ -323,14 +327,18 @@ int get_full(Agent* a,
     if (!a || !values_map || setting_id.empty())
         return BAMBU_NETWORK_ERR_INVALID_HANDLE;
 
-    auto hdrs = a->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end())
+    if (!a->user_logged_in())
         return BAMBU_NETWORK_ERR_GET_SETTING_LIST_FAILED;
-    hdrs.erase("Content-Type");
 
     const std::string url = settings_base(a) + "/"
                           + obn::http::url_encode(setting_id);
-    auto resp = obn::http::get_json(url, hdrs);
+    // genuine-parity: ordered headers. GET single setting; no Content-Type.
+    // flag unverified (no capture)
+    obn::http::Request greq;
+    greq.method = obn::http::Method::GET;
+    greq.url    = url;
+    greq.ordered_headers = a->cloud_api_ordered_headers(/*client_id*/false, /*content_type*/false);
+    auto resp = obn::http::perform(greq);
     OBN_DEBUG("cloud_presets::get_full id=%s http=%ld bytes=%zu",
               setting_id.c_str(), resp.status_code, resp.body.size());
 
@@ -359,14 +367,19 @@ std::string create(Agent*                              a,
     if (http_code) *http_code = 0;
     if (!a) return {};
 
-    auto hdrs = a->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (!a->user_logged_in()) {
         OBN_WARN("cloud_presets::create: not logged in");
         return {};
     }
 
     std::string body = build_upload_body(name, values_map, /*is_create=*/true);
-    auto resp = obn::http::post_json(settings_base(a), body, hdrs);
+    // genuine-parity: ordered headers. POST setting create. flag unverified (no capture)
+    obn::http::Request req;
+    req.method = obn::http::Method::POST;
+    req.url    = settings_base(a);
+    req.body   = body;
+    req.ordered_headers = a->cloud_api_ordered_headers(/*client_id*/true, /*content_type*/true);
+    auto resp = obn::http::perform(req);
     if (http_code) *http_code = static_cast<unsigned int>(resp.status_code);
     OBN_INFO("cloud_presets::create name='%s' http=%ld bytes=%zu",
              name.c_str(), resp.status_code, resp.body.size());
@@ -395,8 +408,7 @@ int update(Agent*                              a,
     if (http_code) *http_code = 0;
     if (!a || setting_id.empty()) return BAMBU_NETWORK_ERR_PUT_SETTING_FAILED;
 
-    auto hdrs = a->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (!a->user_logged_in()) {
         OBN_WARN("cloud_presets::update: not logged in");
         return BAMBU_NETWORK_ERR_PUT_SETTING_FAILED;
     }
@@ -406,7 +418,8 @@ int update(Agent*                              a,
     req.method  = obn::http::Method::PATCH;
     req.url     = settings_base(a) + "/" + obn::http::url_encode(setting_id);
     req.body    = body;
-    req.headers = hdrs;
+    // genuine-parity: ordered headers. PATCH setting update. flag unverified (no capture)
+    req.ordered_headers = a->cloud_api_ordered_headers(/*client_id*/true, /*content_type*/true);
     auto resp   = obn::http::perform(req);
     if (http_code) *http_code = static_cast<unsigned int>(resp.status_code);
     OBN_INFO("cloud_presets::update id=%s http=%ld bytes=%zu",
@@ -430,17 +443,17 @@ int del(Agent* a, const std::string& setting_id)
 {
     if (!a || setting_id.empty()) return BAMBU_NETWORK_ERR_DEL_SETTING_FAILED;
 
-    auto hdrs = a->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (!a->user_logged_in()) {
         OBN_WARN("cloud_presets::del: not logged in");
         return BAMBU_NETWORK_ERR_DEL_SETTING_FAILED;
     }
-    hdrs.erase("Content-Type");
 
     obn::http::Request req;
     req.method  = obn::http::Method::DEL;
     req.url     = settings_base(a) + "/" + obn::http::url_encode(setting_id);
-    req.headers = hdrs;
+    // genuine-parity: ordered headers. DELETE setting; no Content-Type.
+    // flag unverified (no capture)
+    req.ordered_headers = a->cloud_api_ordered_headers(/*client_id*/true, /*content_type*/false);
     auto resp   = obn::http::perform(req);
     OBN_INFO("cloud_presets::del id=%s http=%ld", setting_id.c_str(), resp.status_code);
 
