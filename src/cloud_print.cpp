@@ -472,7 +472,9 @@ int poll_upload(const std::string& api, const std::string& token,
                 BBL::OnUpdateStatusFn update_fn,
                 BBL::WasCancelledFn cancel_fn)
 {
-    auto ohdrs = obn::bbl::identity_headers(token, user_id, /*client_id*/false, /*content_type*/false);
+    // Content-Type=true: genuine sends it on all requests except get_app_cert and
+    // task/<id>; these upload-flow GETs are neither. flag inferred (no capture).
+    auto ohdrs = obn::bbl::identity_headers(token, user_id, /*client_id*/false, /*content_type*/true);
     const std::string url = api
         + "/v1/iot-service/api/user/notification?action=upload&ticket="
         + obn::http::url_encode(ticket);
@@ -536,7 +538,9 @@ int get_upload_url(const std::string& api, const std::string& token,
                    std::string* out_url,
                    BBL::OnUpdateStatusFn update_fn)
 {
-    auto ohdrs = obn::bbl::identity_headers(token, user_id, /*client_id*/false, /*content_type*/false);
+    // Content-Type=true: genuine sends it on all requests except get_app_cert and
+    // task/<id>; these upload-flow GETs are neither. flag inferred (no capture).
+    auto ohdrs = obn::bbl::identity_headers(token, user_id, /*client_id*/false, /*content_type*/true);
     std::string url = api + "/v1/iot-service/api/user/upload?models="
                     + obn::http::url_encode(model_slot);
     obn::http::Request greq; greq.method = obn::http::Method::GET; greq.url = url; greq.ordered_headers = ohdrs;
