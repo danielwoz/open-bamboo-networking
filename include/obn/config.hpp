@@ -50,6 +50,14 @@ struct Settings {
     // Lets us test both without a rebuild if one channel misbehaves.
     bool force_cloud_print_lan_channel = false;
 
+    // Path A (hybrid) for O1S/H2S: upload the .gcode.3mf to the printer over
+    // LAN FTPS, but publish the url_enc/param_enc project_file command over the
+    // CLOUD MQTT broker (run_hybrid_print_job). Sidesteps both the LAN-broker
+    // 50348044 cancel and the cloud create_task RSA app-cert 403. Requires
+    // block_cloud=0 and a logged-in Bambu account. Takes precedence over
+    // force_cloud_print when both are set.
+    bool force_hybrid_print          = false;
+
     // File transfer
     bool force_ftps               = false;
 

@@ -39,6 +39,7 @@
 #include "obn/bambu_networking.hpp"
 #include "obn/cert_store.hpp"
 #include "obn/signing.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/cloud_auth.hpp"
 #include "obn/config.hpp"
 #include "obn/http_client.hpp"
@@ -299,12 +300,22 @@ std::map<std::string, std::string> bbl_headers(const std::string& access_token,
     h["Authorization"]        = "Bearer " + access_token;
     h["Content-Type"]         = "application/json";
     h["Accept"]               = "application/json";
-    h["X-BBL-Client-Name"]    = "OpenBambooNetworking";
+    // Match genuine Bambu Studio's cloud fingerprint. The authoritative
+    // client-name is what OrcaSlicer's own host agent sends
+    // (BBLCloudServiceAgent::get_extra_header -> "BambuStudio"); the stock
+    // network plugin sends the same on every api.bambulab.com call.
+    h["X-BBL-Client-Name"]    = "BambuStudio";
     h["X-BBL-Client-Type"]    = "slicer";
     h["X-BBL-OS-Type"]        = "linux";
     h["X-BBL-Agent-OS-Type"]  = "linux";
     h["X-BBL-Language"]       = "en-US";
-    h["X-BBL-Executable-info"]= "{}";
+    // Genuine Studio sends a JSON executable fingerprint here, NOT "{}". The
+    // exact key set is only known from a live MITM capture of the stock plugin
+    // (NETWORK_PLUGIN.md notes the header exists but not its bytes). This mirrors
+    // the shape (product / version / os) using the current Studio release string
+    // so the cloud version gate does not flag us as outdated. TODO: replace with
+    // the byte-exact blob captured from the genuine plugin via bambu_host.
+    h["X-BBL-Executable-info"]= "{\"name\":\"BambuStudio\",\"version\":\"02.07.01.62\",\"os\":\"windows\"}";
     if (!user_id.empty())
         h["X-BBL-Client-ID"] = "slicer:" + user_id + ":obn0";
     return h;
@@ -346,7 +357,7 @@ int create_project(const std::string& api, const std::string& token,
     obn::http::Request req;
     req.method  = obn::http::Method::POST;
     req.url     = api + "/v1/iot-service/api/user/project";
-    req.headers = bbl_headers(token, user_id);
+    req.ordered_headers = obn::bbl::identity_headers(token, user_id, /*client_id*/true, /*content_type*/true);
     req.body    = std::string("{\"name\":") + json_escape(name) + "}";
     req.timeout_s = 30;
 
@@ -438,7 +449,7 @@ int notify_upload(const std::string& api, const std::string& token,
     obn::http::Request req;
     req.method  = obn::http::Method::PUT;
     req.url     = api + "/v1/iot-service/api/user/notification";
-    req.headers = bbl_headers(token, user_id);
+    req.ordered_headers = obn::bbl::identity_headers(token, user_id, /*client_id*/true, /*content_type*/true);
     std::ostringstream os;
     os << "{\"upload\":{\"origin_file_name\":" << json_escape(origin_name)
        << ",\"ticket\":" << json_escape(ticket) << "}}";
@@ -461,15 +472,15 @@ int poll_upload(const std::string& api, const std::string& token,
                 BBL::OnUpdateStatusFn update_fn,
                 BBL::WasCancelledFn cancel_fn)
 {
-    std::map<std::string, std::string> hdrs = bbl_headers(token, user_id);
-    hdrs.erase("Content-Type"); // GET
+    auto ohdrs = obn::bbl::identity_headers(token, user_id, /*client_id*/false, /*content_type*/false);
     const std::string url = api
         + "/v1/iot-service/api/user/notification?action=upload&ticket="
         + obn::http::url_encode(ticket);
 
     for (int attempt = 0; attempt < 20; ++attempt) {
         if (cancel_fn && cancel_fn()) return BAMBU_NETWORK_ERR_CANCELED;
-        auto resp = obn::http::get_json(url, hdrs);
+        obn::http::Request greq; greq.method = obn::http::Method::GET; greq.url = url; greq.ordered_headers = ohdrs;
+        auto resp = obn::http::perform(greq);
         if (resp.error.empty() && status_ok(resp.status_code)) {
             OBN_DEBUG("cloud_print: poll_upload OK attempt=%d", attempt);
             return 0;
@@ -501,7 +512,7 @@ int patch_project(const std::string& api, const std::string& token,
     obn::http::Request req;
     req.method    = obn::http::Method::PATCH;
     req.url       = api + "/v1/iot-service/api/user/project/" + project_id;
-    req.headers   = bbl_headers(token, user_id);
+    req.ordered_headers = obn::bbl::identity_headers(token, user_id, /*client_id*/true, /*content_type*/true);
     req.timeout_s = 30;
     std::ostringstream os;
     os << "{\"profile_id\":" << json_escape(profile_id)
@@ -525,11 +536,11 @@ int get_upload_url(const std::string& api, const std::string& token,
                    std::string* out_url,
                    BBL::OnUpdateStatusFn update_fn)
 {
-    std::map<std::string, std::string> hdrs = bbl_headers(token, user_id);
-    hdrs.erase("Content-Type"); // GET
+    auto ohdrs = obn::bbl::identity_headers(token, user_id, /*client_id*/false, /*content_type*/false);
     std::string url = api + "/v1/iot-service/api/user/upload?models="
                     + obn::http::url_encode(model_slot);
-    auto resp = obn::http::get_json(url, hdrs);
+    obn::http::Request greq; greq.method = obn::http::Method::GET; greq.url = url; greq.ordered_headers = ohdrs;
+    auto resp = obn::http::perform(greq);
     if (!resp.error.empty() || !status_ok(resp.status_code))
         return fail_stage(update_fn, BAMBU_NETWORK_ERR_PRINT_WR_GET_USER_UPLOAD_FAILED,
                           "get_upload_url", resp);
@@ -624,12 +635,13 @@ int create_task(const std::string& api, const std::string& token,
     obn::http::Request req;
     req.method  = obn::http::Method::POST;
     req.url     = api + "/v1/user-service/my/task";
-    auto hdrs = bbl_headers(token, user_id);
-    hdrs["x-bbl-app-certification-id"] = obn::signing::slicer_cert_id();
-    // The cloud verifies this header by recovering a recent timestamp from the
-    // signature; it signs the current time in ms (raw PKCS#1 v1.5), not the body.
-    hdrs["x-bbl-device-security-sign"] = obn::signing::device_security_sign();
-    req.headers   = std::move(hdrs);
+    auto ohdrs = obn::bbl::identity_headers(token, user_id, /*client_id*/true, /*content_type*/true);
+    // create_task signing headers. NOTE: still signs with the SLICER key
+    // (slicer_cert_id -> 403); the app key (cert_id 4a63194e, extracted) is the
+    // fix (task #12). Position vs genuine order is TBD (create_task not yet captured).
+    ohdrs.emplace_back("x-bbl-app-certification-id", obn::signing::slicer_cert_id());
+    ohdrs.emplace_back("x-bbl-device-security-sign", obn::signing::device_security_sign());
+    req.ordered_headers = std::move(ohdrs);
     req.body      = body;
     req.timeout_s = 60;
 
@@ -975,6 +987,199 @@ int Agent::run_cloud_print_job(const BBL::PrintParams& p,
     OBN_INFO("cloud_print dev=%s: queued (project=%s task=%s chan=%s)",
              p.dev_id.c_str(), info.project_id.c_str(), task_id.c_str(),
              use_lan_channel ? "lan" : "cloud");
+    return 0;
+}
+
+// Uppercase-hex MD5 of a local file. The O1S/H2S firmware cross-checks the
+// uploaded 3mf against print.md5 and refuses the job with 0500-4003 ("unable to
+// parse the file") on an empty OR mismatched hash - which is exactly what an
+// empty md5 field produced on the first hybrid attempt. Mirrors print_job.cpp's
+// md5_of_file (file-local there, so duplicated here rather than exported).
+static std::string hybrid_md5_hex_of_file(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return {};
+    EVP_MD_CTX* ctx = ::EVP_MD_CTX_new();
+    if (!ctx) return {};
+    std::string hex;
+    if (::EVP_DigestInit_ex(ctx, ::EVP_md5(), nullptr) == 1) {
+        std::vector<char> buf(64 * 1024);
+        bool ok = true;
+        while (f.read(buf.data(), static_cast<std::streamsize>(buf.size())) ||
+               f.gcount() > 0) {
+            if (::EVP_DigestUpdate(ctx, buf.data(),
+                                   static_cast<size_t>(f.gcount())) != 1) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            unsigned char digest[EVP_MAX_MD_SIZE] = {0};
+            unsigned      len = 0;
+            if (::EVP_DigestFinal_ex(ctx, digest, &len) == 1) {
+                static const char kHex[] = "0123456789ABCDEF";
+                hex.resize(len * 2);
+                for (unsigned i = 0; i < len; ++i) {
+                    hex[2 * i]     = kHex[(digest[i] >> 4) & 0xF];
+                    hex[2 * i + 1] = kHex[ digest[i]       & 0xF];
+                }
+            }
+        }
+    }
+    ::EVP_MD_CTX_free(ctx);
+    return hex;
+}
+
+// ---------------------------------------------------------------------------
+// Path A (hybrid). Stage the full .gcode.3mf on the printer over LAN FTPS, then
+// publish the project_file command - url_enc/param_enc'd to the printer's own
+// TLS-leaf cert - over the CLOUD MQTT broker instead of the LAN broker.
+//
+// Rationale: the O1S / H2S firmware cancels a LAN-broker project_file with
+// fail_reason 50348044 ("task canceled") even when it is correctly signed and
+// the referenced file is already present, but it honours the identical command
+// when it arrives over the cloud channel. No create_task / S3 upload is
+// involved, so this needs only a live cloud MQTT session (username=u_<uid>,
+// password=token) - not the RSA app-cert that create_task's
+// x-bbl-device-security-sign requires (that path 403s).
+// ---------------------------------------------------------------------------
+int Agent::run_hybrid_print_job(const BBL::PrintParams& p,
+                                BBL::OnUpdateStatusFn   update_fn,
+                                BBL::WasCancelledFn     cancel_fn)
+{
+    OBN_INFO("hybrid_print dev=%s ip=%s plate=%d file=%s",
+             p.dev_id.c_str(), p.dev_ip.c_str(), p.plate_index, p.filename.c_str());
+
+    if (p.filename.empty()) {
+        if (update_fn) update_fn(BBL::PrintingStageERROR,
+                                 BAMBU_NETWORK_ERR_FILE_NOT_EXIST, "empty filename");
+        return BAMBU_NETWORK_ERR_FILE_NOT_EXIST;
+    }
+    if (p.dev_ip.empty() || p.password.empty()) {
+        if (update_fn) update_fn(BBL::PrintingStageERROR,
+                                 BAMBU_NETWORK_ERR_CONNECTION_TO_PRINTER_FAILED,
+                                 "hybrid print needs dev_ip + access_code for the LAN upload");
+        return BAMBU_NETWORK_ERR_CONNECTION_TO_PRINTER_FAILED;
+    }
+
+    // The command goes over the cloud broker, so a cloud session is mandatory.
+    auto session = user_session_snapshot();
+    if (session.access_token.empty() || session.user_id.empty()) {
+        if (update_fn) update_fn(BBL::PrintingStageERROR,
+                                 BAMBU_NETWORK_ERR_INVALID_HANDLE,
+                                 "hybrid print needs a cloud login (token)");
+        return BAMBU_NETWORK_ERR_INVALID_HANDLE;
+    }
+    if (obn::config::current().block_cloud) {
+        OBN_WARN("run_hybrid_print_job: cloud publish blocked by block_cloud");
+        if (update_fn) update_fn(BBL::PrintingStageERROR,
+                                 BAMBU_NETWORK_ERR_INVALID_HANDLE,
+                                 "hybrid print blocked by block_cloud=1");
+        return BAMBU_NETWORK_ERR_INVALID_HANDLE;
+    }
+
+    if (update_fn) update_fn(BBL::PrintingStageCreate, 0, "");
+    if (cancel_fn && cancel_fn()) return BAMBU_NETWORK_ERR_CANCELED;
+
+    // Normalise the exported plate to plate_1 (rename Metadata/plate_<N>.gcode
+    // -> plate_1.gcode, shift model_settings + plate assets, drop stray
+    // lower-plate thumbnails). Studio exports the SELECTED plate as plate_<N>,
+    // but the O1S/H2S firmware refuses to parse a spool whose gcode entry isn't
+    // plate_1 - that is the 0500-4003 "unable to parse the file" we hit with a
+    // plate_2 spool. Mirrors run_send_gcode_to_sdcard + the proven LAN recipe.
+    // Must run BEFORE the FTPS upload and the md5 hash below (it rewrites the
+    // file in place), so both see the normalised plate_1 archive.
+    if (!p.filename.empty() && !print_job::normalise_to_plate_one(p.filename)) {
+        if (update_fn) update_fn(BBL::PrintingStageERROR,
+                                 BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED,
+                                 "plate normalisation failed");
+        return BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED;
+    }
+
+    // --- 1. Stage the .gcode.3mf on the printer via LAN FTPS -----------------
+    std::string remote_name = print_job::pick_remote_name(p);
+    std::string folder = p.ftp_folder;
+    if (!folder.empty() && folder.back()  != '/') folder += '/';
+    if (!folder.empty() && folder.front() == '/') folder.erase(0, 1);
+    std::string lan_remote_path = "/" + folder + remote_name;
+
+    print_params_set_use_ssl_for_ftp(p.use_ssl_for_ftp);
+
+    std::uint64_t total = 0;
+    std::string ca_file = bambu_ca_bundle_path();
+    std::string stored_path;
+    if (update_fn) update_fn(BBL::PrintingStageUpload, 0, "");
+    if (int rc = print_job::ftp_upload(p, lan_remote_path, ca_file,
+                                       update_fn, cancel_fn,
+                                       BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED,
+                                       total, &stored_path);
+        rc != 0) return rc;
+    if (!stored_path.empty()) lan_remote_path = stored_path;
+    OBN_INFO("hybrid_print: lan-ftps uploaded %llu bytes to %s",
+             static_cast<unsigned long long>(total), lan_remote_path.c_str());
+
+    if (cancel_fn && cancel_fn()) return BAMBU_NETWORK_ERR_CANCELED;
+    if (update_fn) update_fn(BBL::PrintingStageSending, 0, "");
+
+    // --- 2. RSA-encrypt url + param to the printer's captured leaf cert ------
+    std::string url         = print_job::build_ftp_url(lan_remote_path);
+    std::string pem_path    = cert_store::device_cert_path(config_dir(), p.dev_id);
+    // After normalise_to_plate_one the gcode entry is always plate_1.gcode.
+    std::string plate_param = "Metadata/plate_1.gcode";
+
+    std::string enc_err;
+    std::string url_enc   = rsa_pkcs1v15_encrypt_b64(pem_path, url,         &enc_err);
+    std::string param_enc = rsa_pkcs1v15_encrypt_b64(pem_path, plate_param, &enc_err);
+    if (url_enc.empty() || param_enc.empty()) {
+        OBN_ERROR("hybrid_print: RSA field encryption failed (%s); cert=%s dev=%s",
+                  enc_err.c_str(), pem_path.c_str(), p.dev_id.c_str());
+        if (update_fn) update_fn(BBL::PrintingStageERROR,
+                                 BAMBU_NETWORK_ERR_CONNECTION_TO_PRINTER_FAILED,
+                                 "RSA field encryption failed: " + enc_err);
+        return BAMBU_NETWORK_ERR_CONNECTION_TO_PRINTER_FAILED;
+    }
+
+    // --- 3. Build the project_file payload (no cloud project / task ids) -----
+    print_job::CloudProjectFileOpts cloud_opts;
+    cloud_opts.url_enc    = std::move(url_enc);
+    cloud_opts.param_enc  = std::move(param_enc);
+    cloud_opts.file_path  = lan_remote_path;
+    cloud_opts.md5        = p.ftp_file_md5;
+    if (cloud_opts.md5.empty()) {
+        // Studio leaves ftp_file_md5 empty; hash the uploaded file ourselves so
+        // the firmware's print.md5 cross-check passes. An empty md5 makes the
+        // O1S/H2S refuse the job with 0500-4003 ("unable to parse the file").
+        cloud_opts.md5 = hybrid_md5_hex_of_file(p.filename);
+        if (cloud_opts.md5.empty())
+            OBN_WARN("hybrid_print: failed to MD5 %s; sending empty md5 "
+                     "(firmware will likely refuse the job)", p.filename.c_str());
+    }
+    cloud_opts.project_id = "0";
+    cloud_opts.profile_id = "0";
+    cloud_opts.task_id    = "0";
+    cloud_opts.subtask_id = "0";
+    std::string mqtt_json = print_job::build_cloud_project_file_json(p, cloud_opts);
+    OBN_DEBUG("hybrid_print mqtt(cloud): %s", mqtt_json.c_str());
+
+    // --- 4. Publish the signed project_file over the CLOUD broker. This is the
+    //        crux of Path A: the file lives on the printer (staged over LAN
+    //        FTPS) but the command arrives over the cloud channel, which the
+    //        O1S/H2S accepts where it rejects a LAN-broker command. A normal
+    //        LAN-broker print is run_local_print_job's job, not this one.
+    //        cloud_send_message applies maybe_sign (the enc_msg envelope) first.
+    int pub_rc = cloud_send_message(p.dev_id, mqtt_json, /*qos=*/0);
+    if (pub_rc != 0) {
+        OBN_ERROR("hybrid_print: cloud mqtt publish failed rc=%d "
+                  "(is the cloud session connected?)", pub_rc);
+        if (update_fn) update_fn(BBL::PrintingStageERROR,
+                                 BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED,
+                                 "cloud MQTT publish failed");
+        return BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED;
+    }
+
+    if (update_fn) update_fn(BBL::PrintingStageFinished, 0, "3");
+    OBN_INFO("hybrid_print dev=%s: project_file published over cloud (normalised plate_1)",
+             p.dev_id.c_str());
     return 0;
 }
 

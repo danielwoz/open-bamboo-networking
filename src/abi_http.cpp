@@ -6,6 +6,7 @@
 #include "obn/abi_export.hpp"
 #include "obn/agent.hpp"
 #include "obn/bambu_networking.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/cloud_auth.hpp"
 #include "obn/config.hpp"
 #include "obn/http_client.hpp"
@@ -101,10 +102,16 @@ std::string remap_bind_payload(const std::string& raw_body,
         const auto dev_id = d.find("dev_id").as_string();
         if (out_dev_ids && !dev_id.empty()) out_dev_ids->push_back(dev_id);
         out << "\"dev_id\":"          << obn::json::escape(dev_id) << ',';
-        out << "\"dev_name\":"        << obn::json::escape(d.find("name").as_string()) << ',';
-        out << "\"dev_online\":"      << (d.find("online").as_bool() ? "true" : "false") << ',';
+        // Field names differ by endpoint: /user/bind uses {name, online,
+        // print_status}; /user/print (the genuine get_user_print_info endpoint)
+        // already uses Studio's {dev_name, dev_online, task_status}. Accept
+        // EITHER so this mapper is endpoint-agnostic.
+        auto pick = [&](const char* a2, const char* b2) {
+            auto v = d.find(a2); return v.is_null() ? d.find(b2) : v; };
+        out << "\"dev_name\":"        << obn::json::escape(pick("dev_name","name").as_string()) << ',';
+        out << "\"dev_online\":"      << (pick("dev_online","online").as_bool() ? "true" : "false") << ',';
         out << "\"dev_model_name\":"  << obn::json::escape(d.find("dev_model_name").as_string()) << ',';
-        out << "\"task_status\":"     << obn::json::escape(d.find("print_status").as_string()) << ',';
+        out << "\"task_status\":"     << obn::json::escape(pick("task_status","print_status").as_string()) << ',';
         out << "\"dev_access_code\":" << obn::json::escape(d.find("dev_access_code").as_string());
         // Pass-through extras; Studio code paths occasionally look them up.
         if (auto v = d.find("dev_product_name"); !v.is_null())
@@ -137,13 +144,18 @@ OBN_ABI int bambu_network_get_user_print_info(void* agent,
         return BAMBU_NETWORK_ERR_GET_USER_PRINTINFO_FAILED;
     }
 
-    const std::string url = obn::cloud::api_host(a->cloud_region())
-                          + "/v1/iot-service/api/user/bind";
-    std::map<std::string, std::string> hdrs{
-        {"Authorization", "Bearer " + s.access_token},
-    };
+    // Genuine get_user_print_info == GET /v1/iot-service/api/user/print?force=true
+    // with the full X-BBL identity header block (captured ground truth:
+    // BambuSlicerKeySaver docs/windows_request_order.txt). NOT /user/bind, and
+    // NOT an Authorization-only header set. Match it exactly for REST parity.
+    obn::http::Request req;
+    req.method = obn::http::Method::GET;
+    req.url    = obn::cloud::api_host(a->cloud_region())
+               + "/v1/iot-service/api/user/print?force=true";
+    req.ordered_headers = obn::bbl::identity_headers(
+        s.access_token, s.user_id, /*client_id*/true, /*content_type*/true);
 
-    auto resp = obn::http::get_json(url, hdrs);
+    auto resp = obn::http::perform(req);
     if (http_code) *http_code = static_cast<unsigned int>(resp.status_code);
 
     if (!resp.error.empty()) {

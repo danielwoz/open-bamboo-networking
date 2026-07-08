@@ -97,7 +97,15 @@ std::string build_file_url(const std::string& absolute_path)
 
 std::string build_ftp_url(const std::string& stored_path)
 {
-    return "ftp://" + strip_leading_slash(stored_path);
+    // Empty-authority absolute-path form: "ftp:///<path>" (THREE slashes).
+    // H2-family firmware (H2D/H2S) requires this: it parses the two-slash
+    // form "ftp://<name>" as host=<name> and then cannot locate the file it
+    // just staged in its own FTPS root, so it prepares the job and immediately
+    // cancels it (print fail_reason 50348044 "task canceled"). The
+    // firmware-validated H2D print (BENCHY, project_bridge_only_signing_works)
+    // used the three-slash form. The earlier two-slash form was "N7 stock
+    // parity" but N7 is lenient; the H2 parser is not.
+    return "ftp:///" + strip_leading_slash(stored_path);
 }
 
 } // namespace obn::print_job

@@ -122,32 +122,63 @@ Response perform(const Request& req)
     }
 
     curl_slist* hdrs = nullptr;
-    bool        have_ua = false;
-    bool        have_accept = false;
-    bool        have_ct = false;
-    for (const auto& [k, v] : req.headers) {
-        // libcurl idiom: "Header:" (no value, no space) removes an
-        // internally-added header such as Content-Type or Expect.
-        // "Header: value" sends the header normally.
-        std::string kv = v.empty() ? (k + ":") : (k + ": " + v);
-        hdrs = curl_slist_append(hdrs, kv.c_str());
-        std::string lk = k;
-        for (auto& c : lk) c = std::tolower(static_cast<unsigned char>(c));
-        if (lk == "user-agent")   have_ua = true;
-        if (lk == "accept")       have_accept = true;
-        if (lk == "content-type") have_ct = true;
+    if (!req.ordered_headers.empty()) {
+        // Genuine-parity path: send the given headers VERBATIM, in order and
+        // casing, with NO sorting and NO default UA/Accept/Content-Type. The
+        // caller (obn::cloud identity_headers) supplies the complete list in the
+        // exact genuine order. libcurl still prepends Host and appends
+        // Content-Length (for a body) as the stock plugin's libcurl does.
+        for (const auto& [k, v] : req.ordered_headers) {
+            std::string kv = v.empty() ? (k + ":") : (k + ": " + v);
+            hdrs = curl_slist_append(hdrs, kv.c_str());
+        }
+    } else {
+        bool        have_ua = false;
+        bool        have_accept = false;
+        bool        have_ct = false;
+        for (const auto& [k, v] : req.headers) {
+            // libcurl idiom: "Header:" (no value, no space) removes an
+            // internally-added header such as Content-Type or Expect.
+            // "Header: value" sends the header normally.
+            std::string kv = v.empty() ? (k + ":") : (k + ": " + v);
+            hdrs = curl_slist_append(hdrs, kv.c_str());
+            std::string lk = k;
+            for (auto& c : lk) c = std::tolower(static_cast<unsigned char>(c));
+            if (lk == "user-agent")   have_ua = true;
+            if (lk == "accept")       have_accept = true;
+            if (lk == "content-type") have_ct = true;
+        }
+        if (!have_ua) {
+            std::string kv = "User-Agent: " + default_user_agent();
+            hdrs = curl_slist_append(hdrs, kv.c_str());
+        }
+        if (!have_accept && !req.no_default_accept) {
+            hdrs = curl_slist_append(hdrs, "Accept: application/json");
+        }
+        if ((req.method == Method::POST || req.method == Method::PUT ||
+             req.method == Method::PATCH) && !have_ct &&
+            !req.no_default_content_type) {
+            hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
+        }
     }
-    if (!have_ua) {
-        std::string kv = "User-Agent: " + default_user_agent();
-        hdrs = curl_slist_append(hdrs, kv.c_str());
-    }
-    if (!have_accept && !req.no_default_accept) {
-        hdrs = curl_slist_append(hdrs, "Accept: application/json");
-    }
-    if ((req.method == Method::POST || req.method == Method::PUT ||
-         req.method == Method::PATCH) && !have_ct &&
-        !req.no_default_content_type) {
-        hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
+
+    // Genuine-parity request logger (env OBN_REQ_LOG): dump verb, URL, the exact
+    // slist header order (Authorization redacted), and body -- for byte-diffing
+    // against the genuine plugin capture. Off unless the env points at a file.
+    if (const char* reqlog = std::getenv("OBN_REQ_LOG")) {
+        if (reqlog[0]) if (FILE* rf = std::fopen(reqlog, "a")) {
+            std::fprintf(rf, "\n=== [obn-req] %s %s ===\n", method_verb(req.method), req.url.c_str());
+            for (curl_slist* p = hdrs; p; p = p->next) {
+                const char* h = p->data;
+                if (std::strlen(h) >= 14) {
+                    char pre[15]; for (int i = 0; i < 14; ++i) pre[i] = (char)std::tolower((unsigned char)h[i]); pre[14] = 0;
+                    if (std::strcmp(pre, "authorization:") == 0) { std::fprintf(rf, "Authorization: <redacted>\n"); continue; }
+                }
+                std::fprintf(rf, "%s\n", h);
+            }
+            if (!req.body.empty()) std::fprintf(rf, "\n%.*s\n", (int)req.body.size(), req.body.data());
+            std::fclose(rf);
+        }
     }
 
     curl_easy_setopt(curl, CURLOPT_URL,              req.url.c_str());
@@ -185,8 +216,16 @@ Response perform(const Request& req)
     if (req.insecure) {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    } else if (!req.ca_file.empty()) {
-        curl_easy_setopt(curl, CURLOPT_CAINFO, req.ca_file.c_str());
+    } else {
+        if (!req.ca_file.empty())
+            curl_easy_setopt(curl, CURLOPT_CAINFO, req.ca_file.c_str());
+#ifdef CURLSSLOPT_NATIVE_CA
+        // The static OpenSSL build ships no default CA bundle, so public hosts
+        // like api.bambulab.com otherwise fail CURLE_PEER_FAILED_VERIFICATION.
+        // Pull the public roots from the Windows cert store (like the stock
+        // SChannel build), in addition to any ca_file override above.
+        curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, (long)CURLSSLOPT_NATIVE_CA);
+#endif
     }
 
     OBN_DEBUG("http %s %s (body=%zu)",

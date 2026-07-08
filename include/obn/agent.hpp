@@ -229,6 +229,16 @@ public:
                             BBL::WasCancelledFn     cancel_fn,
                             bool                    use_lan_channel);
 
+    // Path A (hybrid): stage the full .gcode.3mf on the printer over LAN FTPS,
+    // but publish the RSA-encrypted (url_enc/param_enc) project_file command
+    // over the CLOUD MQTT broker instead of the LAN broker. Newer firmware
+    // (O1S / H2S) cancels a LAN-broker project_file (fail_reason 50348044) yet
+    // honours the identical cloud-delivered command. Skips create_task / S3, so
+    // it needs only a cloud MQTT session (token) - not the RSA app cert.
+    int run_hybrid_print_job(const BBL::PrintParams& params,
+                             BBL::OnUpdateStatusFn   update_fn,
+                             BBL::WasCancelledFn     cancel_fn);
+
     // -----------------------------
     // Accessors used by stub returns.
     // -----------------------------

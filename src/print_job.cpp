@@ -181,8 +181,14 @@ bool normalise_to_plate_one(const std::string& in_path)
 {
     mz_zip_archive in{};
     if (!mz_zip_reader_init_file(&in, in_path.c_str(), 0)) {
-        OBN_ERROR("plate_norm: open failed: %s", in_path.c_str());
-        return false;
+        // Not a readable ZIP — e.g. Orca's access-code probe file
+        // (resources/check_access_code.txt) or a raw gcode. Plate
+        // normalisation only applies to .3mf spools, so a non-zip is a
+        // no-op SUCCESS. Returning false here made send_gcode_to_sdcard fail
+        // Orca's access-code check, popping the "enter access code" dialog
+        // and blocking every print before it ever reaches the LAN path.
+        OBN_DEBUG("plate_norm: %s is not a zip/3mf; skipping (no-op)", in_path.c_str());
+        return true;
     }
 
     // Find which plate the archive actually carries GCODE for. The host
