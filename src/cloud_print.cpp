@@ -30,6 +30,9 @@
 
 #include "obn/bambu_networking.hpp"
 #include "obn/signing.hpp"
+
+#include "obn/app_cert.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/cloud_auth.hpp"
 #include "obn/config.hpp"
 #include "obn/http_client.hpp"
@@ -599,28 +602,18 @@ int create_task(const std::string& api, const std::string& token,
     obn::http::Request req;
     req.method  = obn::http::Method::POST;
     req.url     = api + "/v1/user-service/my/task";
-    auto hdrs = bbl_headers(token, user_id);
-    OBN_DEBUG("cloud_print: create_task hdr X-BBL-Client-Name=%s X-BBL-OS-Type=%s "
-              "(config client_name=%s) uid=%s",
-              hdrs["X-BBL-Client-Name"].c_str(), hdrs["X-BBL-OS-Type"].c_str(),
-              obn::config::current().client_name.c_str(), user_id.c_str());
-    // Signing headers are best-effort: when no slicer key/cert is configured
-    // these come back empty, and we omit them rather than send blanks. The
-    // cloud verifies x-bbl-device-security-sign by recovering a recent
-    // timestamp from the signature (current time in ms, raw PKCS#1 v1.5, not
-    // the body); it is only enforced on signed writes.
-    // The HTTP header uses `issuer:serial.lower()`, a DIFFERENT serialization
-    // from the MQTT envelope cert_id (`serial+issuer`). Sending the MQTT form
-    // here gets the write rejected with 403.
-    const std::string cert_id  = obn::signing::app_certification_id();
-    const std::string sec_sign = obn::signing::device_security_sign();
-    OBN_DEBUG("cloud_print: create_task sign hdrs cert_id='%s' (len=%zu) "
-              "sec_sign_len=%zu",
-              cert_id.c_str(), cert_id.size(), sec_sign.size());
-    if (!cert_id.empty())  hdrs["x-bbl-app-certification-id"] = cert_id;
-    if (!sec_sign.empty()) hdrs["x-bbl-device-security-sign"] = sec_sign;
-    req.headers   = std::move(hdrs);
-    req.body      = body;
+    auto ohdrs = obn::bbl::identity_headers(token, user_id, /*client_id*/true, /*content_type*/true);
+    std::string app_id = obn::signing::app_cert_id();
+    if (const char* ident = std::getenv("BBL_APP_IDENTITY"); ident && ident[0]) {
+        auto ac = obn::appcert::fetch(api, token, user_id, ident);
+        if (ac.ok) { app_id = ac.cert_id;
+            OBN_INFO("create_task: app cert refreshed via get_app_cert (cert_id=%s)", ac.cert_id.c_str()); }
+        else OBN_WARN("create_task: get_app_cert failed (%s); using configured app_cert_id", ac.error.c_str());
+    }
+    ohdrs.emplace_back("x-bbl-app-certification-id", app_id);
+    ohdrs.emplace_back("x-bbl-device-security-sign", obn::signing::device_security_sign_app());
+    req.ordered_headers = std::move(ohdrs);
+    req.body      = body;    req.body      = body;
     req.timeout_s = 60;
 
     auto resp = obn::http::perform(req);

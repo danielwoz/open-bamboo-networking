@@ -75,5 +75,11 @@ std::string slicer_crl_pem();
 // (no private key needed). Hot path: callers should skip this after a
 // successful install for the device (Studio polls ~1 Hz).
 bool slicer_app_cert_usable();
+// App cert_id + app-key timestamp signature for create_task. The cloud verifies
+// these against the get_app_cert-issued application certificate (the slicer key
+// yields HTTP 403 on create_task). App key: BBL_APP_KEY_PEM / app_key.pem alongside
+// the slicer key; cert_id: BBL_APP_CERT_ID / app_cert_id.txt.
+const std::string& app_cert_id();
+std::string        device_security_sign_app();
 
 } // namespace obn::signing
