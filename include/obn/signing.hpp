@@ -29,4 +29,11 @@ std::string base64_encode(const unsigned char* data, std::size_t len);
 // Returns empty string if neither is configured.
 const std::string& slicer_cert_id();
 
+// App cert_id + app-key timestamp signature for create_task. The cloud verifies
+// these against the get_app_cert-issued application certificate (the slicer key
+// yields HTTP 403 on create_task). App key: BBL_APP_KEY_PEM / app_key.pem alongside
+// the slicer key; cert_id: BBL_APP_CERT_ID / app_cert_id.txt.
+const std::string& app_cert_id();
+std::string        device_security_sign_app();
+
 } // namespace obn::signing
