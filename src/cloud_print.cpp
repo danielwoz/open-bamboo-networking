@@ -39,6 +39,7 @@
 #include "obn/bambu_networking.hpp"
 #include "obn/cert_store.hpp"
 #include "obn/signing.hpp"
+#include "obn/app_cert.hpp"
 #include "obn/bbl_identity.hpp"
 #include "obn/cloud_auth.hpp"
 #include "obn/config.hpp"
@@ -628,11 +629,20 @@ int create_task(const std::string& api, const std::string& token,
     req.method  = obn::http::Method::POST;
     req.url     = api + "/v1/user-service/my/task";
     auto ohdrs = obn::bbl::identity_headers(token, user_id, /*client_id*/true, /*content_type*/true);
-    // create_task signing headers. NOTE: still signs with the SLICER key
-    // (slicer_cert_id -> 403); the app key (cert_id 4a63194e, extracted) is the
-    // fix (task #12). Position vs genuine order is TBD (create_task not yet captured).
-    ohdrs.emplace_back("x-bbl-app-certification-id", obn::signing::slicer_cert_id());
-    ohdrs.emplace_back("x-bbl-device-security-sign", obn::signing::device_security_sign());
+    // create_task is verified against the APP certificate (get_app_cert-issued),
+    // NOT the slicer key -- signing with the slicer key returns HTTP 403. When
+    // BBL_APP_IDENTITY is set, refresh the app cert via get_app_cert and use its
+    // cert_id; else fall back to the configured app_cert_id(). The signature is
+    // made with the app private key (BBL_APP_KEY_PEM / app_key.pem).
+    std::string app_id = obn::signing::app_cert_id();
+    if (const char* ident = std::getenv("BBL_APP_IDENTITY"); ident && ident[0]) {
+        auto ac = obn::appcert::fetch(api, token, user_id, ident);
+        if (ac.ok) { app_id = ac.cert_id;
+            OBN_INFO("create_task: app cert refreshed via get_app_cert (cert_id=%s)", ac.cert_id.c_str()); }
+        else OBN_WARN("create_task: get_app_cert failed (%s); using configured app_cert_id", ac.error.c_str());
+    }
+    ohdrs.emplace_back("x-bbl-app-certification-id", app_id);
+    ohdrs.emplace_back("x-bbl-device-security-sign", obn::signing::device_security_sign_app());
     req.ordered_headers = std::move(ohdrs);
     req.body      = body;
     req.timeout_s = 60;

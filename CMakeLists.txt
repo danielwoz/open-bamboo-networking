@@ -285,6 +285,7 @@ add_library(bambu_networking SHARED
     src/config.cpp
     src/cloud_auth.cpp
     src/bind_cloud.cpp
+    src/app_cert.cpp
     src/cloud_filament.cpp
     src/cloud_presets.cpp
     src/cloud_print.cpp
@@ -778,6 +779,18 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
         ABI_VERSION=${OBN_ABI_VERSION_HEX})
     target_link_libraries(signing_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     add_test(NAME signing COMMAND signing_test)
+
+    add_executable(get_app_cert_test tests/get_app_cert_test.cpp
+        src/app_cert.cpp
+        src/http_client.cpp
+        src/json_lite.cpp
+        src/log.cpp
+        src/os_compat.cpp)
+    target_include_directories(get_app_cert_test PRIVATE include ${OBN_GENERATED_DIR})
+    target_compile_definitions(get_app_cert_test PRIVATE
+        OBN_VERSION_STRING="${OBN_VERSION}"
+        ABI_VERSION=${OBN_ABI_VERSION_HEX})
+    target_link_libraries(get_app_cert_test PRIVATE obn_curl_iface OpenSSL::SSL OpenSSL::Crypto)
 
 endif()
 
