@@ -34,6 +34,14 @@ std::string to_print_basename(std::string fname);
 // the caller should treat false as fatal and refuse the print.
 bool normalise_to_plate_one(const std::string& threemf_path);
 
+// Recover the source-design identity of a .3mf from its DesignModelId /
+// DesignProfileId metadata (in 3D/3dmodel.model). Returns true and fills the
+// outputs for a model derived from an online source (e.g. MakerWorld); returns
+// false for a locally-authored model, which carries no such tags. Used to
+// populate oriModelId/oriProfileId when the caller's PrintParams did not.
+bool read_3mf_design_ids(const std::string& threemf_path,
+                         std::string* out_model_id, int* out_profile_id);
+
 // Returns the plate index N of the (single) Metadata/plate_<N>.gcode entry the
 // host exported into the archive, or -1 if none/unreadable. This is the ground
 // truth for the print command's `param`, independent of the unreliable ABI
