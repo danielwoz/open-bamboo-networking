@@ -1196,20 +1196,9 @@ int Agent::run_hybrid_print_job(const BBL::PrintParams& p,
     if (update_fn) update_fn(BBL::PrintingStageCreate, 0, "");
     if (cancel_fn && cancel_fn()) return BAMBU_NETWORK_ERR_CANCELED;
 
-    // Normalise the exported plate to plate_1 (rename Metadata/plate_<N>.gcode
-    // -> plate_1.gcode, shift model_settings + plate assets, drop stray
-    // lower-plate thumbnails). Studio exports the SELECTED plate as plate_<N>,
-    // but the O1S/H2S firmware refuses to parse a spool whose gcode entry isn't
-    // plate_1 - that is the 0500-4003 "unable to parse the file" we hit with a
-    // plate_2 spool. Mirrors run_send_gcode_to_sdcard + the proven LAN recipe.
-    // Must run BEFORE the FTPS upload and the md5 hash below (it rewrites the
-    // file in place), so both see the normalised plate_1 archive.
-    if (!p.filename.empty() && !print_job::normalise_to_plate_one(p.filename)) {
-        if (update_fn) update_fn(BBL::PrintingStageERROR,
-                                 BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED,
-                                 "plate normalisation failed");
-        return BAMBU_NETWORK_ERR_PRINT_LP_UPLOAD_FTP_FAILED;
-    }
+    // The archive is uploaded untouched: build_cloud_project_file_json derives
+    // the cleartext `param` (plate path) from the PrintParams, so the firmware
+    // is pointed at the real selected plate without rewriting the spool.
 
     // --- 1. Stage the .gcode.3mf on the printer via LAN FTPS -----------------
     std::string remote_name = print_job::pick_remote_name(p);
@@ -1236,16 +1225,26 @@ int Agent::run_hybrid_print_job(const BBL::PrintParams& p,
     if (cancel_fn && cancel_fn()) return BAMBU_NETWORK_ERR_CANCELED;
     if (update_fn) update_fn(BBL::PrintingStageSending, 0, "");
 
-    // --- 2. RSA-encrypt url + param to the printer's captured leaf cert ------
-    std::string url         = print_job::build_ftp_url(lan_remote_path);
-    std::string pem_path    = cert_store::device_cert_path(config_dir(), p.dev_id);
-    // After normalise_to_plate_one the gcode entry is always plate_1.gcode.
-    std::string plate_param = "Metadata/plate_1.gcode";
+    // --- 2. RSA-encrypt url to the printer's captured leaf cert --------------
+    // Only `url` -> `url_enc` is encrypted (per the project_file middleware
+    // spec); `param` stays cleartext and is emitted by
+    // build_cloud_project_file_json from the PrintParams.
+    std::string url      = print_job::build_ftp_url(lan_remote_path);
+    std::string pem_path = cert_store::device_cert_path(config_dir(), p.dev_id);
 
+    EVP_PKEY* printer_pk = load_printer_pub_key_from_pem(pem_path);
+    if (!printer_pk) {
+        OBN_ERROR("hybrid_print: no printer public key; cert=%s dev=%s",
+                  pem_path.c_str(), p.dev_id.c_str());
+        if (update_fn) update_fn(BBL::PrintingStageERROR,
+                                 BAMBU_NETWORK_ERR_CONNECTION_TO_PRINTER_FAILED,
+                                 "no printer public key for RSA encryption");
+        return BAMBU_NETWORK_ERR_CONNECTION_TO_PRINTER_FAILED;
+    }
     std::string enc_err;
-    std::string url_enc   = rsa_pkcs1v15_encrypt_b64(pem_path, url,         &enc_err);
-    std::string param_enc = rsa_pkcs1v15_encrypt_b64(pem_path, plate_param, &enc_err);
-    if (url_enc.empty() || param_enc.empty()) {
+    std::string url_enc = rsa_pkcs1v15_encrypt_b64(printer_pk, url, &enc_err);
+    ::EVP_PKEY_free(printer_pk);
+    if (url_enc.empty()) {
         OBN_ERROR("hybrid_print: RSA field encryption failed (%s); cert=%s dev=%s",
                   enc_err.c_str(), pem_path.c_str(), p.dev_id.c_str());
         if (update_fn) update_fn(BBL::PrintingStageERROR,
@@ -1256,8 +1255,8 @@ int Agent::run_hybrid_print_job(const BBL::PrintParams& p,
 
     // --- 3. Build the project_file payload (no cloud project / task ids) -----
     print_job::CloudProjectFileOpts cloud_opts;
+    cloud_opts.url        = url;   // cleartext stays alongside url_enc
     cloud_opts.url_enc    = std::move(url_enc);
-    cloud_opts.param_enc  = std::move(param_enc);
     cloud_opts.file_path  = lan_remote_path;
     cloud_opts.md5        = p.ftp_file_md5;
     if (cloud_opts.md5.empty()) {

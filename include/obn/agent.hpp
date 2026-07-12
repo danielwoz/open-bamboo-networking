@@ -510,6 +510,11 @@ private:
     // connect_printer() stores the MQTT/FTPS password (access code) here so
     // bambu_network_bind can POST it to the cloud as bind_code.
     std::unordered_map<std::string, std::string> lan_access_code_by_dev_;
+    // connect_printer() stores the printer's LAN IP; cache_ssdp_json_for_bind()
+    // stores the model string (dev_type). Both feed maybe_setup_camera(), which
+    // needs the IP to reach the camera and the model to select the source type.
+    std::unordered_map<std::string, std::string> lan_ip_by_dev_;
+    std::unordered_map<std::string, std::string> dev_model_by_id_;
 
     // Buffer populated by bambu_network_get_setting_list2 and drained
     // by bambu_network_get_user_presets. See preset_cache_* above.

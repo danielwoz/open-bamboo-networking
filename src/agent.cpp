@@ -194,6 +194,7 @@ int Agent::connect_printer(std::string dev_id,
         }
     }
 
+    std::string dev_ip_snap = dev_ip;
     auto session = std::make_unique<LanSession>(std::move(dev_id),
                                                 std::move(dev_ip),
                                                 std::move(username),
@@ -216,6 +217,7 @@ int Agent::connect_printer(std::string dev_id,
         {
             std::lock_guard<std::mutex> lk(mu_);
             lan_access_code_by_dev_[sess_dev_id] = password_snap;
+            lan_ip_by_dev_[sess_dev_id]          = dev_ip_snap;
             lan_session_                         = std::move(session);
         }
     }
@@ -1515,12 +1517,17 @@ void Agent::cache_ssdp_json_for_bind(const std::string& json)
     if (!root) return;
     std::string ip = trim_ip_string(root->find("dev_ip").as_string());
     if (ip.empty()) return;
-    const std::string dev_id = root->find("dev_id").as_string();
+    const std::string dev_id   = root->find("dev_id").as_string();
+    const std::string dev_type = root->find("dev_type").as_string();
     if (!dev_id.empty()) {
         obn::lan_tls::registry_put_ip_serial(ip, dev_id);
     }
     std::lock_guard<std::mutex> lk(mu_);
     ssdp_json_by_ip_[ip] = json;
+    // Remember the model string so the camera path can pick the right
+    // source (Agora vs TUTK) when a video stream is later requested.
+    if (!dev_id.empty() && !dev_type.empty())
+        dev_model_by_id_[dev_id] = dev_type;
 }
 
 namespace {
