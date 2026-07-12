@@ -99,20 +99,32 @@ bool rsa_wrap(const uint8_t K[32], std::string& out) {
     return true;
 }
 
-// cert_id = lower-hex of the leading serial bytes (x-bbl-app-certification-id,
-// e.g. "4a63194e" for serial 4A63194E...). First 4 serial bytes.
+// x-bbl-app-certification-id references the cert by issuer CN and full serial:
+//   "CN=<issuer common name>:<lower-hex serial>"
+// e.g. "CN=GLOF3813734089.bambulab.com:a4e8faaa1a38e3650a0ea590d192383f".
 std::string cert_id_from_pem(const std::string& pem) {
     std::unique_ptr<BIO, BioDel> bio(BIO_new_mem_buf(pem.data(), (int)pem.size()));
     if (!bio) return {};
     std::unique_ptr<X509, X509Del> x(PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
     if (!x) return {};
+
+    char cn[256] = {};
+    X509_NAME* issuer = X509_get_issuer_name(x.get());
+    if (!issuer || X509_NAME_get_text_by_NID(issuer, NID_commonName, cn, sizeof cn) <= 0)
+        return {};
+
     const ASN1_INTEGER* s = X509_get0_serialNumber(x.get());
     if (!s || s->length <= 0 || !s->data) return {};
-    int n = s->length < 4 ? s->length : 4;
+    // ASN.1 prepends a 0x00 byte when the leading serial byte has the high bit
+    // set; the wire form drops it.
+    int start = (s->data[0] == 0x00 && s->length > 1) ? 1 : 0;
     static const char H[] = "0123456789abcdef";
-    std::string id;
-    for (int i = 0; i < n; ++i) { id += H[(s->data[i] >> 4) & 0xF]; id += H[s->data[i] & 0xF]; }
-    return id;
+    std::string serial;
+    for (int i = start; i < s->length; ++i) {
+        serial += H[(s->data[i] >> 4) & 0xF];
+        serial += H[s->data[i] & 0xF];
+    }
+    return "CN=" + std::string(cn) + ":" + serial;
 }
 
 }  // namespace

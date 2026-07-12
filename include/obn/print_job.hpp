@@ -21,6 +21,14 @@ namespace obn::print_job {
 // Slicer wrote a plate_0 file.
 std::string to_print_basename(std::string fname);
 
+// Recover the source-design identity of a .3mf from its DesignModelId /
+// DesignProfileId metadata (in 3D/3dmodel.model). Returns true and fills the
+// outputs for a model derived from an online source (e.g. MakerWorld); returns
+// false for a locally-authored model, which carries no such tags. Used to
+// populate oriModelId/oriProfileId when the caller's PrintParams did not.
+bool read_3mf_design_ids(const std::string& threemf_path,
+                         std::string* out_model_id, int* out_profile_id);
+
 // Computes the printer-side filename we upload and later reference in
 // the project_file MQTT payload. Uses project_name/task_name when
 // possible and falls back to the basename of params.filename.

@@ -554,10 +554,47 @@ int get_upload_url(const std::string& api, const std::string& token,
 }
 
 // The body of POST /my/task is the single biggest surface we have to
-// mimic from Studio. The MITM baseline is ~30 fields; most of them
-// map 1:1 to PrintParams. Anything we can't sensibly provide (custom
-// filament mappings from MakerWorld, nozzle_info for multi-nozzle
-// printers) we default to an empty array, which the server accepts.
+// mimic from Studio. It is 27 fields; most map 1:1 to PrintParams. Fields we
+// can't reconstruct ourselves are forwarded verbatim from PrintParams (the
+// slicer fills them); they fall back to an empty array only when the caller
+// left them blank.
+//
+// Cloud contract for the nozzle / filament-mapping fields (single- vs
+// dual-nozzle, e.g. H2D):
+//   * nozzleInfos comes from p.nozzles_info. Single-nozzle: []. Dual-nozzle:
+//     one object per nozzle, e.g.
+//       [{"diameter":0.4,"flowSize":"standard_flow","id":1,"type":null},
+//        {"diameter":0.4,"flowSize":"standard_flow","id":0,"type":null}]
+//     (id 1 = left, id 0 = right). We forward it as-is.
+//   * amsDetailMapping comes from p.ams_mapping_info. On dual-nozzle each entry
+//     also carries a "nozzleId" (0 = right, 1 = left) identifying which nozzle
+//     the filament feeds; single-nozzle entries omit it. Forwarded as-is.
+//   * amsMapping2 is the [{amsId,slotId}] form (255 = external/none). We prefer
+//     p.ams_mapping2 (which preserves external-spool slots like {255,0}) and
+//     only derive it from the flat amsMapping when ams_mapping2 is blank -- the
+//     flat form collapses -1 to {255,255} and would lose that slot info.
+//   A standalone (non-slicer) caller that builds PrintParams itself MUST
+//   populate nozzles_info / ams_mapping_info / ams_mapping2 for a dual-nozzle
+//   printer; we cannot synthesize them without the printer's nozzle layout.
+//
+// Cloud contract for the model-identity fields:
+//   * modelId / profileId are the freshly uploaded instance, minted by the
+//     preceding upload pipeline (create_project -> upload -> confirm). The task
+//     binds to this instance, so it must be a real, confirmed asset the account
+//     owns. Reusing an arbitrary or unconfirmed id yields HTTP 403 ("no access
+//     to the content"). These come from `model_id`/`profile_id` here, not from
+//     PrintParams.
+//   * oriModelId / oriProfileId identify the SOURCE design a model was derived
+//     from. Two valid cases:
+//       - Online-sourced model (e.g. MakerWorld): oriModelId/oriProfileId are
+//         the source design ids, taken from the 3mf's DesignModelId/
+//         DesignProfileId metadata (p.origin_model_id/origin_profile_id).
+//       - Locally-authored model: it has no source design, so oriModelId is ""
+//         and oriProfileId is 0. The cloud accepts this and creates the task
+//         against the uploaded modelId alone. No design linkage is required.
+//   * Request auth: x-bbl-device-security-sign is raw PKCS#1 v1.5 over the
+//     current epoch-ms timestamp with the slicer key; x-bbl-app-certification-id
+//     names the cert as CN=<issuer>:<serial> (see create_task).
 std::string build_task_body(const BBL::PrintParams& p,
                             const std::string& project_id,
                             const std::string& model_id,
@@ -567,13 +604,11 @@ std::string build_task_body(const BBL::PrintParams& p,
     (void)project_id;
     std::ostringstream os;
     os << "{";
+    // Forwarded as-is; on dual-nozzle each entry carries a nozzleId (see contract).
     os << "\"amsDetailMapping\":"
        << json_or_default(p.ams_mapping_info, "[]");
     os << ",\"amsMapping\":"  << json_or_default(p.ams_mapping, "[-1]");
     os << ",\"amsMapping2\":" << ams_mapping2_for_cloud(p);
-    if (!p.nozzle_mapping.empty()) {
-        os << ",\"nozzleMapping\":" << p.nozzle_mapping; // TODO: test
-    }
     os << ",\"autoBedLeveling\":"     << p.auto_bed_leveling;
     os << ",\"bedLeveling\":"         << to_bool(p.task_bed_leveling);
     os << ",\"bedType\":" << json_escape(p.task_bed_type.empty()
@@ -589,8 +624,12 @@ std::string build_task_body(const BBL::PrintParams& p,
     os << ",\"cover\":\"\"";
     os << ",\"deviceId\":"     << json_escape(p.dev_id);
     os << ",\"extrudeCaliFlag\":"         << p.auto_flow_cali;
+    // Genuine bodies always carry extrudeCaliManualMode; default it to 0 on
+    // ABIs that predate the struct field.
     #if ABI_VERSION >= 0x020400
         os << ",\"extrudeCaliManualMode\":"   << p.extruder_cali_manual_mode;
+    #else
+        os << ",\"extrudeCaliManualMode\":0";
     #endif
     os << ",\"filamentSettingIds\":[]";
     os << ",\"flowCali\":"            << to_bool(p.task_flow_cali);
@@ -599,6 +638,7 @@ std::string build_task_body(const BBL::PrintParams& p,
        << (use_lan_channel ? std::string{"\"lan_file\""}
                            : std::string{"\"cloud_file\""});
     os << ",\"modelId\":"     << json_escape(model_id);
+    // [] on single-nozzle; one object per nozzle on dual-nozzle (see contract).
     os << ",\"nozzleInfos\":" << json_or_default(p.nozzles_info, "[]");
     os << ",\"nozzleOffsetCali\":"    << p.auto_offset_cali;
     os << ",\"oriModelId\":"  << json_escape(p.origin_model_id);
@@ -629,11 +669,12 @@ int create_task(const std::string& api, const std::string& token,
     req.method  = obn::http::Method::POST;
     req.url     = api + "/v1/user-service/my/task";
     auto ohdrs = obn::bbl::identity_headers(token, user_id, /*client_id*/true, /*content_type*/true);
-    // create_task is verified against the APP certificate (get_app_cert-issued),
-    // NOT the slicer key -- signing with the slicer key returns HTTP 403. When
-    // BBL_APP_IDENTITY is set, refresh the app cert via get_app_cert and use its
-    // cert_id; else fall back to the configured app_cert_id(). The signature is
-    // made with the app private key (BBL_APP_KEY_PEM / app_key.pem).
+    // create_task is verified against the app certificate, which shares the
+    // slicer key pair -- the genuine x-bbl-device-security-sign RSA-recovers
+    // against the slicer public key over the current epoch-ms timestamp. The
+    // header names the cert by issuer CN + serial ("CN=<issuer>:<serial>"). When
+    // BBL_APP_IDENTITY is set, refresh the cert via get_app_cert to obtain that
+    // id; else fall back to the configured app_cert_id().
     std::string app_id = obn::signing::app_cert_id();
     if (const char* ident = std::getenv("BBL_APP_IDENTITY"); ident && ident[0]) {
         auto ac = obn::appcert::fetch(api, token, user_id, ident);
@@ -642,7 +683,7 @@ int create_task(const std::string& api, const std::string& token,
         else OBN_WARN("create_task: get_app_cert failed (%s); using configured app_cert_id", ac.error.c_str());
     }
     ohdrs.emplace_back("x-bbl-app-certification-id", app_id);
-    ohdrs.emplace_back("x-bbl-device-security-sign", obn::signing::device_security_sign_app());
+    ohdrs.emplace_back("x-bbl-device-security-sign", obn::signing::device_security_sign());
     req.ordered_headers = std::move(ohdrs);
     req.body      = body;
     req.timeout_s = 60;
@@ -909,7 +950,23 @@ int Agent::run_cloud_print_job(const BBL::PrintParams& p,
 
     if (update_fn) update_fn(BBL::PrintingStageSending, 0, "");
 
-    std::string task_body = build_task_body(p, info.project_id, info.model_id,
+    // oriModelId/oriProfileId name the source design a model was derived from.
+    // BambuStudio fills these from the 3mf before calling us, but a standalone
+    // caller may leave them empty, so recover them from the 3mf's DesignModelId
+    // metadata. A locally-authored model has no source design -> empty oriModelId,
+    // which the cloud accepts (see build_task_body's contract note).
+    BBL::PrintParams tp = p;
+    if (tp.origin_model_id.empty() && !tp.filename.empty()) {
+        std::string design_model_id;
+        int design_profile_id = 0;
+        if (print_job::read_3mf_design_ids(tp.filename, &design_model_id, &design_profile_id)) {
+            tp.origin_model_id   = design_model_id;
+            tp.origin_profile_id = design_profile_id;
+            OBN_INFO("cloud_print: recovered oriModelId=%s oriProfileId=%d from 3mf",
+                     design_model_id.c_str(), design_profile_id);
+        }
+    }
+    std::string task_body = build_task_body(tp, info.project_id, info.model_id,
                                             info.profile_id, use_lan_channel);
     std::string task_id;
     if (int rc = create_task(api, token, uid, task_body, &task_id, update_fn);

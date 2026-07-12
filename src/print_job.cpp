@@ -26,6 +26,9 @@
 #include "obn/print_params_ftp_prefs.hpp"
 #include "obn/tunnel_upload.hpp"
 
+#include "miniz/miniz.h"
+#include "miniz/miniz_zip.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -73,6 +76,61 @@ std::string to_print_basename(std::string fname)
     if (ends_with_ci(fname, ".3mf"))
         fname.erase(fname.size() - 4);
     return fname + ".gcode.3mf";
+}
+
+namespace {
+
+// Value of the first <metadata name="KEY">VALUE</metadata> in an XML blob, or
+// "" if absent. The trailing quote in the search key anchors an exact attribute
+// match so KEY cannot prefix-match a longer attribute name.
+static std::string metadata_value(const std::string& xml, const char* key)
+{
+    const std::string needle = std::string("name=\"") + key + "\"";
+    std::size_t p = xml.find(needle);
+    if (p == std::string::npos) return {};
+    std::size_t gt = xml.find('>', p);
+    if (gt == std::string::npos) return {};
+    std::size_t lt = xml.find('<', gt + 1);
+    if (lt == std::string::npos) return {};
+    return xml.substr(gt + 1, lt - gt - 1);
+}
+
+} // namespace
+
+// Recover the source-design identity from a 3MF's DesignModelId /
+// DesignProfileId metadata (see the header declaration). Used to populate
+// oriModelId/oriProfileId for cloud create_task when the caller left them blank.
+bool read_3mf_design_ids(const std::string& threemf_path,
+                         std::string* out_model_id, int* out_profile_id)
+{
+    mz_zip_archive in{};
+    if (!mz_zip_reader_init_file(&in, threemf_path.c_str(), 0)) return false;
+    const mz_uint n = mz_zip_reader_get_num_files(&in);
+    char name[512];
+    std::string xml;
+    for (mz_uint i = 0; i < n; ++i) {
+        if (mz_zip_reader_get_filename(&in, i, name, sizeof(name)) == 0) continue;
+        if (std::string(name) == "3D/3dmodel.model") {
+            std::size_t sz = 0;
+            void* data = mz_zip_reader_extract_to_heap(&in, i, &sz, 0);
+            if (data) { xml.assign(static_cast<const char*>(data), sz); mz_free(data); }
+            break;
+        }
+    }
+    mz_zip_reader_end(&in);
+    if (xml.empty()) return false;
+
+    const std::string mid = metadata_value(xml, "DesignModelId");
+    // Empty or all-whitespace => no usable source design (locally-authored model,
+    // or a stray/commented tag). A real DesignModelId is a non-blank token.
+    if (mid.find_first_not_of(" \t\r\n") == std::string::npos) return false;
+    if (out_model_id) *out_model_id = mid;
+    if (out_profile_id) {
+        const std::string pid = metadata_value(xml, "DesignProfileId");
+        try { *out_profile_id = pid.empty() ? 0 : std::stoi(pid); }
+        catch (...) { *out_profile_id = 0; }
+    }
+    return true;
 }
 
 namespace {
