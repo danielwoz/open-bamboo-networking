@@ -107,11 +107,13 @@ std::string cert_id_from_pem(const std::string& pem) {
     std::unique_ptr<X509, X509Del> x(PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
     if (!x) return {};
     const ASN1_INTEGER* s = X509_get0_serialNumber(x.get());
-    if (!s || s->length <= 0 || !s->data) return {};
-    int n = s->length < 4 ? s->length : 4;
+    const int slen = s ? ASN1_STRING_length(s) : 0;                  // ASN1_STRING is opaque in OpenSSL 3.x
+    const unsigned char* sdata = s ? ASN1_STRING_get0_data(s) : nullptr;
+    if (slen <= 0 || !sdata) return {};
+    int n = slen < 4 ? slen : 4;
     static const char H[] = "0123456789abcdef";
     std::string id;
-    for (int i = 0; i < n; ++i) { id += H[(s->data[i] >> 4) & 0xF]; id += H[s->data[i] & 0xF]; }
+    for (int i = 0; i < n; ++i) { id += H[(sdata[i] >> 4) & 0xF]; id += H[sdata[i] & 0xF]; }
     return id;
 }
 
