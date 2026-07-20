@@ -50,6 +50,17 @@ function(obn_vendor_mosquitto_setup)
         obn_patch_mosquitto_common_object("${eclipse_mosquitto_SOURCE_DIR}")
     endif()
 
+    # Windows: satisfy mosquitto's `find_package(PThreads4W REQUIRED)` with a
+    # vendored pthreads4w instead of vcpkg. Must run BEFORE the mosquitto
+    # add_subdirectory below (so the PThreads4W::PThreads4W target exists), and
+    # CMAKE_MODULE_PATH must carry our shim FindPThreads4W.cmake so mosquitto's
+    # find_package resolves. Both are inherited by the add_subdirectory scope.
+    if(WIN32)
+        include("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/VendorPThreads4W.cmake")
+        obn_vendor_pthreads4w_setup()
+        list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/pthreads4w")
+    endif()
+
     set(_obn_saved_skip_install "${CMAKE_SKIP_INSTALL_RULES}")
     set(CMAKE_SKIP_INSTALL_RULES TRUE)
     add_subdirectory("${eclipse_mosquitto_SOURCE_DIR}" "${eclipse_mosquitto_BINARY_DIR}" EXCLUDE_FROM_ALL)
