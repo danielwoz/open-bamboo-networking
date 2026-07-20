@@ -54,7 +54,7 @@ std::string trim_ip_string(std::string s)
     return s;
 }
 
-// Millisecond epoch as MQTT sequence_id — same style as print_job::now_seq_id.
+// Millisecond epoch as MQTT sequence_id â€” same style as print_job::now_seq_id.
 std::string now_seq_id()
 {
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -296,7 +296,7 @@ int Agent::disconnect_printer()
 
 void Agent::maybe_setup_camera(const std::string& dev_id)
 {
-    // Already started — idempotent.
+    // Already started â€” idempotent.
     if (!obn::camera::get_url(dev_id).empty()) return;
 
     std::string ip, access_code, model;
@@ -320,7 +320,7 @@ void Agent::maybe_setup_camera(const std::string& dev_id)
     if (url.empty())
         OBN_DEBUG("camera: no source for %s (model='%s')", dev_id.c_str(), model.c_str());
     else
-        OBN_INFO("camera: %s → %s", dev_id.c_str(), url.c_str());
+        OBN_INFO("camera: %s â†’ %s", dev_id.c_str(), url.c_str());
 }
 
 void Agent::stop_camera(const std::string& dev_id)
@@ -764,7 +764,7 @@ bool patch_string_zero_to(std::string&       payload,
     return false;
 }
 
-// override_lan_ip: replace every "ip":<int64> inside the "net":{"info":[…]}
+// override_lan_ip: replace every "ip":<int64> inside the "net":{"info":[â€¦]}
 // block with an int64 encoding of the connect_printer IP.  Studio parses
 // this field into MachineObject::dev_ip which then feeds the camera URL;
 // when accessing the printer through NAT the firmware reports its internal
@@ -1148,20 +1148,20 @@ void Agent::notify_local_message(const std::string& dev_id, const std::string& j
     // moment the next one starts. Three candidates, tried in order of
     // reliability across observed firmware:
     //
-    //  1. `task_id` — the printer's own monotonic print-job counter
+    //  1. `task_id` â€” the printer's own monotonic print-job counter
     //     (e.g. "8442", incremented per job). Present on P-/X-/A-series
     //     LAN-only frames even when subtask_id/job_id/lan_task_id are
     //     all "0", which makes it the most universally available
     //     stable per-print identifier in the report block.
     //
-    //  2. `gcode_start_time` — wall-clock epoch when the print started.
+    //  2. `gcode_start_time` â€” wall-clock epoch when the print started.
     //     Some engineering / older firmware does not emit task_id but
     //     does emit this; keep it as a fallback.
     //
-    //  3. Empty string — no token available; the cache key collapses to
+    //  3. Empty string â€” no token available; the cache key collapses to
     //     the legacy name-only FNV hash, preserving prior behaviour
     //     (i.e. the bug, but only on firmware that carries neither
-    //     identifier — none observed in practice).
+    //     identifier â€” none observed in practice).
     //
     // Must be extracted *before* try_rewrite_print_ids, because that
     // helper rewrites task_id="0" -> synth_id and we'd then key against
@@ -1199,7 +1199,7 @@ void Agent::notify_local_message(const std::string& dev_id, const std::string& j
     // The `version` participates in the cache key only for the LAN /
     // synthetic branch. Real cloud subtask ids are already unique per
     // print on the server side, so a same-named reprint there gets a
-    // brand-new subtask_id and the old cache key naturally retires —
+    // brand-new subtask_id and the old cache key naturally retires â€”
     // mixing gcode_start_time in would just orphan PNGs faster.
     std::string cover_version;
     if (!subtask_name.empty() && subtask_name != "-1") {
@@ -1661,7 +1661,7 @@ bool Agent::start_discovery(bool enable, bool sending)
     // `sending` is part of the ABI but Studio never passes true in current
     // sources (GUI_App: start_discovery(true, false); SelectMachinePopup has
     // start_discovery(true, start) commented out). We do not implement any
-    // extra behaviour for sending=true — passive NOTIFY listen only.
+    // extra behaviour for sending=true â€” passive NOTIFY listen only.
     (void)sending;
     return ensure_ssdp_discovery_running();
 }
@@ -1770,7 +1770,7 @@ void Agent::install_device_cert(const std::string& dev_id, bool lan_only)
         }
     }
 
-    // Do not open a second TLS session to :8883 while LAN MQTT is up — the
+    // Do not open a second TLS session to :8883 while LAN MQTT is up â€” the
     // printer drops one of them (seen as mqtt rc=7 / rc=5 on Orca reconnect).
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -1975,7 +1975,7 @@ int Agent::lookup_bind_detect(const std::string& dev_ip,
 
     // Studio calls bind_detect from InnerLoad before post_init() starts
     // discovery. Start the listener ourselves and passively wait for the
-    // printer's periodic NOTIFY broadcast (stock does the same — no M-SEARCH).
+    // printer's periodic NOTIFY broadcast (stock does the same â€” no M-SEARCH).
     if (!ensure_ssdp_discovery_running()) {
         OBN_WARN("lookup_bind_detect: SSDP listener failed to start for %s",
                  want.c_str());
@@ -2037,6 +2037,29 @@ std::map<std::string, std::string> Agent::cloud_api_http_headers() const
     if (!s.access_token.empty()) h["Authorization"] = "Bearer " + s.access_token;
     h["Accept"]        = "application/json";
     h["Content-Type"]  = "application/json";
+    return h;
+}
+
+obn::bbl::HeaderList Agent::cloud_api_ordered_headers(bool include_client_id,
+                                                      bool with_content_type) const
+{
+    obn::auth::Session                 s;
+    std::map<std::string, std::string> extra;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        s     = auth_store_ ? auth_store_->snapshot() : obn::auth::Session{};
+        extra = extra_http_headers_;
+    }
+    // Genuine order + casing come from identity_headers; overlay the host's
+    // actual set_extra_http_header values (real Device-ID / versions / language)
+    // where present, so the wire matches the running Studio rather than only the
+    // compiled defaults. Keys use the same X-BBL casing on both sides.
+    auto h = obn::bbl::identity_headers(s.access_token, s.user_id,
+                                        include_client_id, with_content_type);
+    for (auto& kv : h) {
+        auto it = extra.find(kv.first);
+        if (it != extra.end()) kv.second = it->second;
+    }
     return h;
 }
 

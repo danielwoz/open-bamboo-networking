@@ -207,10 +207,14 @@ int CloudSession::start(ConnectedCb on_connected,
     // because we can't anchor it. Cloud auth remains gated by the
     // bearer token in `password`, so an MITM still can't impersonate
     // the user. See agent.cpp Agent::connect_cloud for the rationale.
-    if (!ca_file.empty()) {
-        cfg.tls_skip_chain_verify = true;
-        cfg.tls_insecure          = true;
-    }
+    // Unconditional on Windows. This was gated on `!ca_file.empty()`, but an
+    // EMPTY ca_file is the normal case — and it left verification ON, so with
+    // the static OpenSSL build (no default trust store) the cloud MQTT connect
+    // failed outright (endless refresh_connection loop, never a CONNACK). Auth
+    // stays gated by the bearer token in `password`, so skipping the chain/host
+    // check does not let an MITM impersonate the user.
+    cfg.tls_skip_chain_verify = true;
+    cfg.tls_insecure          = true;
 #endif
 
     OBN_INFO("cloud mqtt: connecting to %s:%d as u_%s (token=%zu bytes)",

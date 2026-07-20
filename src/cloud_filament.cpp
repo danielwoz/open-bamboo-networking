@@ -199,11 +199,15 @@ int list(Agent* a, const BBL::FilamentQueryParams& params, std::string* out_body
         OBN_WARN("cloud_filament::list: not logged in");
         return BAMBU_NETWORK_ERR_GET_FILAMENTS_FAILED;
     }
-    // GET: avoid Content-Type so picky backends don't 415.
-    hdrs.erase("Content-Type");
-
     const std::string url = base_v2(a) + build_list_query(params);
-    auto resp = obn::http::get_json(url, hdrs);
+    // genuine-parity: ordered headers. GET filament list. Content-Type=true:
+    // the genuine /my/filament/v2 capture (genuine_request_order_linux.txt) sends
+    // it; the original OSS Content-Type erase was non-genuine. VERIFIED vs capture.
+    obn::http::Request greq;
+    greq.method = obn::http::Method::GET;
+    greq.url    = url;
+    greq.ordered_headers = a->cloud_api_ordered_headers(/*client_id*/false, /*content_type*/true);
+    auto resp = obn::http::perform(greq);
     OBN_INFO("cloud_filament::list http=%ld bytes=%zu (offset=%d limit=%d cat='%s' status='%s' ids='%s' rfid='%s')",
              resp.status_code, resp.body.size(),
              params.offset, params.limit,
@@ -227,7 +231,13 @@ int create(Agent* a, const std::string& request_body, std::string* out_body)
         return BAMBU_NETWORK_ERR_CREATE_FILAMENT_FAILED;
     }
 
-    auto resp = obn::http::post_json(base_v2(a), request_body, hdrs);
+    // genuine-parity: ordered headers. POST filament create. flag unverified (no capture)
+    obn::http::Request req;
+    req.method = obn::http::Method::POST;
+    req.url    = base_v2(a);
+    req.body   = request_body;
+    req.ordered_headers = a->cloud_api_ordered_headers(/*client_id*/true, /*content_type*/true);
+    auto resp = obn::http::perform(req);
     OBN_INFO("cloud_filament::create http=%ld bytes=%zu req_len=%zu",
              resp.status_code, resp.body.size(), request_body.size());
 
@@ -252,7 +262,8 @@ int update(Agent* a, const std::string& spool_id,
     obn::http::Request req;
     req.method  = obn::http::Method::PUT;
     req.url     = base_v2(a);
-    req.headers = hdrs;
+    // genuine-parity: ordered headers. PUT filament update. flag unverified (no capture)
+    req.ordered_headers = a->cloud_api_ordered_headers(/*client_id*/true, /*content_type*/true);
     req.body    = request_body;
     auto resp   = obn::http::perform(req);
     OBN_INFO("cloud_filament::update id='%s' http=%ld bytes=%zu req_len=%zu",
@@ -285,7 +296,8 @@ int batch_delete(Agent* a, const BBL::FilamentDeleteParams& params,
     obn::http::Request req;
     req.method  = obn::http::Method::DEL;
     req.url     = base_v2(a) + "/batch";
-    req.headers = hdrs;
+    // genuine-parity: ordered headers. DELETE-with-body batch. flag unverified (no capture)
+    req.ordered_headers = a->cloud_api_ordered_headers(/*client_id*/true, /*content_type*/true);
     req.body    = build_delete_body(params);
     auto resp   = obn::http::perform(req);
     OBN_INFO("cloud_filament::batch_delete http=%ld ids=%zu rfids=%zu",
@@ -307,9 +319,14 @@ int config(Agent* a, std::string* out_body)
         OBN_WARN("cloud_filament::config: not logged in");
         return BAMBU_NETWORK_ERR_GET_FILAMENT_CONFIG_FAILED;
     }
-    hdrs.erase("Content-Type");
-
-    auto resp = obn::http::get_json(base_config(a), hdrs);
+    // genuine-parity: ordered headers. GET filament config. Content-Type=true to
+    // match the sibling /my/filament/v2 (same design-user-service, capture-verified
+    // to send it). flag inferred (no direct capture for /filament/config).
+    obn::http::Request greq;
+    greq.method = obn::http::Method::GET;
+    greq.url    = base_config(a);
+    greq.ordered_headers = a->cloud_api_ordered_headers(/*client_id*/false, /*content_type*/true);
+    auto resp = obn::http::perform(greq);
     OBN_INFO("cloud_filament::config http=%ld bytes=%zu",
              resp.status_code, resp.body.size());
 

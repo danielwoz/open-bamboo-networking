@@ -15,11 +15,39 @@
 
 namespace obn::print_job {
 
-// Strip path, normalise plate_0→plate_1 in the name, ensure .gcode.3mf
+// Strip path, normalise plate_0â†’plate_1 in the name, ensure .gcode.3mf
 // extension. Used to compute the remote STOR filename and the
 // project_file url= field so the printer sees plate_1 even when Orca
 // Slicer wrote a plate_0 file.
 std::string to_print_basename(std::string fname);
+
+// Rewrite a 3MF ZIP archive in-place so the SELECTED plate becomes plate_1:
+// find the single Metadata/plate_<N>.gcode the host exported, and if N != 1
+// shift every per-plate asset (plate_<N>.gcode/.gcode.md5/.json/.png,
+// plate_no_light_<N>.png) and model_settings.config plater_id/path refs by
+// (1 - N) so plate_<N>.* -> plate_1.*. Assets of lower plates (e.g. a stray
+// plate_1.png thumbnail from an unselected plate) are dropped to avoid a name
+// collision. No-op when the archive already contains plate_1.gcode or has no
+// plate gcode at all (BBS-style spools pass through unchanged). The detection
+// keys on the .gcode entry, not any plate_<N>.* asset, so a stray thumbnail
+// can't mask the need to normalise. Returns false only on I/O or ZIP errors â€”
+// the caller should treat false as fatal and refuse the print.
+bool normalise_to_plate_one(const std::string& threemf_path);
+
+// Recover the source-design identity of a .3mf from its DesignModelId /
+// DesignProfileId metadata (in 3D/3dmodel.model). Returns true and fills the
+// outputs for a model derived from an online source (e.g. MakerWorld); returns
+// false for a locally-authored model, which carries no such tags. Used to
+// populate oriModelId/oriProfileId when the caller's PrintParams did not.
+bool read_3mf_design_ids(const std::string& threemf_path,
+                         std::string* out_model_id, int* out_profile_id);
+
+// Returns the plate index N of the (single) Metadata/plate_<N>.gcode entry the
+// host exported into the archive, or -1 if none/unreadable. This is the ground
+// truth for the print command's `param`, independent of the unreliable ABI
+// plate_index. The LAN print path uploads the archive untouched and points the
+// print at this plate (rewriting the archive to plate_1 desynced the internal
+// slice_info.config index and the firmware then "couldn't read the file").
 
 // Computes the printer-side filename we upload and later reference in
 // the project_file MQTT payload. Uses project_name/task_name when
@@ -28,7 +56,7 @@ std::string pick_remote_name(const BBL::PrintParams& p);
 
 // Remote STOR basename for start_send_gcode_to_sdcard: sanitized
 // project_name verbatim (no .gcode.3mf suffix). Empty when project_name
-// is unset — stock libbambu_networking.so fails the upload in that case.
+// is unset â€” stock libbambu_networking.so fails the upload in that case.
 std::string dest_name_for_send_gcode(const BBL::PrintParams& p);
 
 // True when the print job should upload via :6000 + MQTT brtc:// (P2S/emmc).
@@ -79,7 +107,11 @@ struct ProjectFileOpts {
     std::string subtask_id{"0"};
 };
 
+// plate_index_override > 0 forces "param":"Metadata/plate_<override>.gcode"
+// (the LAN upload path passes the plate index actually present in the uploaded
+// archive, from archive_plate_gcode_index()). 0 (default) uses p.plate_index.
 std::string build_project_file_json(const BBL::PrintParams& p,
-                                    const ProjectFileOpts&  opts);
+                                    const ProjectFileOpts&  opts,
+                                    int                     plate_index_override = 0);
 
 } // namespace obn::print_job

@@ -7,6 +7,7 @@
 #include "obn/agent.hpp"
 #include "obn/bambu_networking.hpp"
 #include "obn/auth.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/cloud_auth.hpp"
 #include "obn/config.hpp"
 #include "obn/http_client.hpp"
@@ -161,11 +162,16 @@ bool fetch_user_print_info(obn::Agent* a,
                            std::string* out_mapped,
                            std::vector<std::string>* out_dev_ids)
 {
-    const std::string url = obn::cloud::api_host(a->cloud_region()) + path;
-    std::map<std::string, std::string> hdrs{
-        {"Authorization", "Bearer " + s.access_token},
-    };
-    auto resp = obn::http::get_json(url, hdrs);
+    // Send the full genuine X-BBL identity header block in the captured order.
+    // An Authorization-only set (or a sorted std::map, which reorders them)
+    // diverges from the stock plugin's request fingerprint; the ordered builder
+    // is what /user/print parity was verified against.
+    obn::http::Request req;
+    req.method          = obn::http::Method::GET;
+    req.url             = obn::cloud::api_host(a->cloud_region()) + path;
+    req.ordered_headers = obn::bbl::identity_headers(
+        s.access_token, s.user_id, /*client_id*/true, /*content_type*/true);
+    auto resp = obn::http::perform(req);
     if (out_resp) *out_resp = resp;
     if (resp.status_code != 200 || resp.body.empty()) return false;
 
@@ -278,7 +284,7 @@ OBN_ABI int bambu_network_get_user_tasks(void* agent,
     // Stock: GET /v1/user-service/my/tasks?limit=&offset=&status=[&deviceId=]
     // Confirmed against MITM of bambu_network_agent/02.08.01.51. Response is
     // {total, hits:[...]} and Studio parses it verbatim (TaskManager.cpp /
-    // WebViewDialog.cpp) — no remapping needed.
+    // WebViewDialog.cpp) Ã¢â‚¬â€ no remapping needed.
     std::ostringstream path;
     path << "/v1/user-service/my/tasks"
          << "?limit="  << params.limit

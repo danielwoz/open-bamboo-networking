@@ -9,7 +9,7 @@
 
 using obn::as_agent;
 
-// Prefer a real stream: LAN MJPEG for JPEG-capable models (A1, P1, N2S, …)
+// Prefer a real stream: LAN MJPEG for JPEG-capable models (A1, P1, N2S, â€¦)
 // or the Agora/TUTK cloud relay (see obn::camera), started lazily by
 // maybe_setup_camera(). When neither source claims the printer (H.264 LAN
 // models Studio drives natively, or a source we don't yet implement) fall

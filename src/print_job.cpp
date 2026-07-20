@@ -42,7 +42,7 @@
 namespace obn::print_job {
 
 // ---------------------------------------------------------------------------
-// Remote filename normalisation (plate_0 → plate_1 rename in the name only)
+// Remote filename normalisation (plate_0 â†’ plate_1 rename in the name only)
 // ---------------------------------------------------------------------------
 
 std::string to_print_basename(std::string fname)
@@ -73,6 +73,281 @@ std::string to_print_basename(std::string fname)
     if (ends_with_ci(fname, ".3mf"))
         fname.erase(fname.size() - 4);
     return fname + ".gcode.3mf";
+}
+
+namespace {
+
+// Returns the plate index N for a per-plate ZIP entry
+// ("Metadata/plate_<N>...", including "Metadata/plate_no_light_<N>..."),
+// or -1 when nm is not a per-plate asset.
+static int plate_asset_index(const std::string& nm)
+{
+    static const char* kPrefixes[] = { "Metadata/plate_no_light_", "Metadata/plate_" };
+    for (const char* pfx : kPrefixes) {
+        const std::size_t pl = std::strlen(pfx);
+        if (nm.compare(0, pl, pfx) != 0) continue;
+        std::size_t di = pl, de = di;
+        while (de < nm.size() && std::isdigit(static_cast<unsigned char>(nm[de]))) ++de;
+        if (de == di) return -1;
+        try { return std::stoi(nm.substr(di, de - di)); }
+        catch (const std::exception&) { return -1; }
+    }
+    return -1;
+}
+
+// Returns N iff nm is exactly "Metadata/plate_<N>.gcode" (the sliced gcode
+// for a plate), else -1. Deliberately excludes plate_<N>.gcode.md5,
+// plate_<N>.json and plate_<N>*.png so a stray thumbnail can never be
+// mistaken for the presence of a plate's gcode.
+static int plate_gcode_index(const std::string& nm)
+{
+    const char* pfx = "Metadata/plate_";
+    const std::size_t pl = std::strlen(pfx);
+    if (nm.compare(0, pl, pfx) != 0) return -1;
+    std::size_t di = pl, de = di;
+    while (de < nm.size() && std::isdigit(static_cast<unsigned char>(nm[de]))) ++de;
+    if (de == di) return -1;
+    if (nm.compare(de, std::string::npos, ".gcode") != 0) return -1;
+    try { return std::stoi(nm.substr(di, de - di)); }
+    catch (const std::exception&) { return -1; }
+}
+
+// Adds `shift` to the numeric plate index in a per-plate entry name.
+// "Metadata/plate_2.gcode" (shift -1) â†’ "Metadata/plate_1.gcode".
+// Returns nm unchanged when it isn't a per-plate asset.
+static std::string shift_plate_index(const std::string& nm, int shift)
+{
+    static const char* kPrefixes[] = { "Metadata/plate_no_light_", "Metadata/plate_" };
+    for (const char* pfx : kPrefixes) {
+        const std::size_t pl = std::strlen(pfx);
+        if (nm.compare(0, pl, pfx) != 0) continue;
+        std::size_t di = pl, de = di;
+        while (de < nm.size() && std::isdigit(static_cast<unsigned char>(nm[de]))) ++de;
+        if (de == di) return nm;
+        int n;
+        try { n = std::stoi(nm.substr(di, de - di)); }
+        catch (const std::exception&) { return nm; }
+        return nm.substr(0, di) + std::to_string(n + shift) + nm.substr(de);
+    }
+    return nm;
+}
+
+// Applies shift_plate_index to every Metadata/ path in the config body and
+// adds `shift` to numeric plater_id attribute values, so model_settings.config
+// stays consistent with the renamed plate entries.
+static std::string shift_config_body(std::string body, int shift)
+{
+    std::string out;
+    out.reserve(body.size() + 32);
+    for (std::size_t i = 0; i < body.size(); ) {
+        auto pos = body.find("Metadata/", i);
+        if (pos == std::string::npos) { out.append(body, i, std::string::npos); break; }
+        out.append(body, i, pos - i);
+        std::size_t end = pos + 9;
+        while (end < body.size() && body[end] != '"' && body[end] != '<' &&
+               body[end] != '>' && body[end] != '\n' && body[end] != ' ')
+            ++end;
+        out += shift_plate_index(body.substr(pos, end - pos), shift);
+        i = end;
+    }
+    const std::string kPV = "key=\"plater_id\" value=\"";
+    for (std::size_t i = 0; (i = out.find(kPV, i)) != std::string::npos; ) {
+        std::size_t vi = i + kPV.size(), ve = vi;
+        while (ve < out.size() && std::isdigit(static_cast<unsigned char>(out[ve]))) ++ve;
+        if (ve > vi) {
+            try {
+                int n = std::stoi(out.substr(vi, ve - vi));
+                std::string nv = std::to_string(n + shift);
+                out.replace(vi, ve - vi, nv);
+                i = vi + nv.size();
+                continue;
+            } catch (const std::exception&) {
+                // out_of_range / invalid_argument: leave value untouched
+            }
+        }
+        i = ve;
+    }
+    return out;
+}
+
+} // namespace
+
+bool normalise_to_plate_one(const std::string& in_path)
+{
+    mz_zip_archive in{};
+    if (!mz_zip_reader_init_file(&in, in_path.c_str(), 0)) {
+        // Not a readable ZIP â€” e.g. Orca's access-code probe file
+        // (resources/check_access_code.txt) or a raw gcode. Plate
+        // normalisation only applies to .3mf spools, so a non-zip is a
+        // no-op SUCCESS. Returning false here made send_gcode_to_sdcard fail
+        // Orca's access-code check, popping the "enter access code" dialog
+        // and blocking every print before it ever reaches the LAN path.
+        OBN_DEBUG("plate_norm: %s is not a zip/3mf; skipping (no-op)", in_path.c_str());
+        return true;
+    }
+
+    // Find which plate the archive actually carries GCODE for. The host
+    // exports the SELECTED plate only, as Metadata/plate_<N>.gcode (N may be
+    // 0, 1, 2, ...). Key off the .gcode entry specifically: a stray
+    // plate_1.png thumbnail from an unselected plate must NOT be mistaken for
+    // "already plate 1" (that masking bug made multi-plate prints upload
+    // plate_2.gcode while the printer was told to run a non-existent
+    // plate_1.gcode -> empty print, gcode_state FINISH at layer 0).
+    int  src_plate = -1;
+    bool has_plate_1_gcode = false;
+    const mz_uint n_in = mz_zip_reader_get_num_files(&in);
+    char name[512];
+    for (mz_uint i = 0; i < n_in; ++i) {
+        if (mz_zip_reader_get_filename(&in, i, name, sizeof(name)) == 0) continue;
+        const int gi = plate_gcode_index(std::string(name));
+        if (gi < 0) continue;
+        if (gi == 1) has_plate_1_gcode = true;
+        if (src_plate < 0) src_plate = gi;   // first (normally only) plate gcode
+    }
+    // Nothing to do: no plate gcode at all, or it is already plate_1.
+    if (src_plate < 0 || has_plate_1_gcode || src_plate == 1) {
+        mz_zip_reader_end(&in);
+        return true;
+    }
+
+    const int shift = 1 - src_plate;   // e.g. src_plate=2 -> shift=-1
+
+    const std::string out_path = in_path + ".normalised";
+    std::error_code ec;
+    std::filesystem::remove(out_path, ec);
+    mz_zip_archive out{};
+    if (!mz_zip_writer_init_file(&out, out_path.c_str(), 0)) {
+        OBN_ERROR("plate_norm: create temp failed: %s", out_path.c_str());
+        mz_zip_reader_end(&in);
+        return false;
+    }
+
+    bool ok = true;
+    int  n_renamed = 0, n_dropped = 0;
+    for (mz_uint i = 0; i < n_in && ok; ++i) {
+        if (mz_zip_reader_get_filename(&in, i, name, sizeof(name)) == 0) continue;
+        const std::string in_name(name);
+
+        if (in_name == "Metadata/model_settings.config") {
+            std::size_t sz = 0;
+            void* data = mz_zip_reader_extract_to_heap(&in, i, &sz, 0);
+            if (!data) { ok = false; break; }
+            std::string body = shift_config_body(
+                std::string(static_cast<const char*>(data), sz), shift);
+            mz_free(data);
+            if (!mz_zip_writer_add_mem(&out, in_name.c_str(), body.data(), body.size(),
+                                       MZ_DEFAULT_COMPRESSION)) {
+                ok = false; break;
+            }
+            continue;
+        }
+
+        const int idx = plate_asset_index(in_name);
+        if (idx >= 0) {
+            const int new_idx = idx + shift;
+            // Drop assets of plates below the selected one (e.g. the stray
+            // plate_1.* thumbnails from an unselected plate) so the renamed
+            // selected plate can take the plate_1.* names without collision.
+            if (new_idx < 1) { ++n_dropped; continue; }
+            const std::string out_name = shift_plate_index(in_name, shift);
+            std::size_t sz = 0;
+            void* data = mz_zip_reader_extract_to_heap(&in, i, &sz, 0);
+            if (!data) { ok = false; break; }
+            bool added = mz_zip_writer_add_mem(&out, out_name.c_str(), data, sz,
+                                               MZ_DEFAULT_COMPRESSION);
+            mz_free(data);
+            if (!added) { ok = false; break; }
+            ++n_renamed;
+        } else {
+            if (!mz_zip_writer_add_from_zip_reader(&out, &in, i)) { ok = false; break; }
+        }
+    }
+
+    if (ok && !mz_zip_writer_finalize_archive(&out)) ok = false;
+    if (!mz_zip_writer_end(&out))                    ok = false;
+    mz_zip_reader_end(&in);
+
+    if (!ok) {
+        std::filesystem::remove(out_path, ec);
+        OBN_ERROR("plate_norm: rewrite failed: %s", in_path.c_str());
+        return false;
+    }
+    std::filesystem::rename(out_path, in_path, ec);
+    if (ec) {
+        OBN_ERROR("plate_norm: rename failed (%s): %s", ec.message().c_str(), in_path.c_str());
+        std::filesystem::remove(out_path, ec);
+        return false;
+    }
+    OBN_INFO("plate_norm: mapped plate_%d -> plate_1 in %s (renamed=%d dropped=%d)",
+             src_plate, in_path.c_str(), n_renamed, n_dropped);
+    return true;
+}
+
+int archive_plate_gcode_index(const std::string& in_path)
+{
+    mz_zip_archive in{};
+    if (!mz_zip_reader_init_file(&in, in_path.c_str(), 0)) {
+        OBN_WARN("plate_detect: open failed: %s", in_path.c_str());
+        return -1;
+    }
+    int found = -1;
+    const mz_uint n = mz_zip_reader_get_num_files(&in);
+    char name[512];
+    for (mz_uint i = 0; i < n; ++i) {
+        if (mz_zip_reader_get_filename(&in, i, name, sizeof(name)) == 0) continue;
+        const int gi = plate_gcode_index(std::string(name));
+        if (gi >= 0) { found = gi; break; }   // first (normally only) plate gcode
+    }
+    mz_zip_reader_end(&in);
+    return found;
+}
+
+// Value of the first <metadata name="KEY">VALUE</metadata> in an XML blob, or
+// "" if absent. The trailing quote in the search key anchors an exact attribute
+// match so KEY cannot prefix-match a longer attribute name.
+static std::string metadata_value(const std::string& xml, const char* key)
+{
+    const std::string needle = std::string("name=\"") + key + "\"";
+    std::size_t p = xml.find(needle);
+    if (p == std::string::npos) return {};
+    std::size_t gt = xml.find('>', p);
+    if (gt == std::string::npos) return {};
+    std::size_t lt = xml.find('<', gt + 1);
+    if (lt == std::string::npos) return {};
+    return xml.substr(gt + 1, lt - gt - 1);
+}
+
+bool read_3mf_design_ids(const std::string& threemf_path,
+                         std::string* out_model_id, int* out_profile_id)
+{
+    mz_zip_archive in{};
+    if (!mz_zip_reader_init_file(&in, threemf_path.c_str(), 0)) return false;
+    const mz_uint n = mz_zip_reader_get_num_files(&in);
+    char name[512];
+    std::string xml;
+    for (mz_uint i = 0; i < n; ++i) {
+        if (mz_zip_reader_get_filename(&in, i, name, sizeof(name)) == 0) continue;
+        if (std::string(name) == "3D/3dmodel.model") {
+            std::size_t sz = 0;
+            void* data = mz_zip_reader_extract_to_heap(&in, i, &sz, 0);
+            if (data) { xml.assign(static_cast<const char*>(data), sz); mz_free(data); }
+            break;
+        }
+    }
+    mz_zip_reader_end(&in);
+    if (xml.empty()) return false;
+
+    const std::string mid = metadata_value(xml, "DesignModelId");
+    // Empty or all-whitespace => no usable source design (locally-authored model,
+    // or a stray/commented tag). A real DesignModelId is a non-blank token.
+    if (mid.find_first_not_of(" \t\r\n") == std::string::npos) return false;
+    if (out_model_id) *out_model_id = mid;
+    if (out_profile_id) {
+        const std::string pid = metadata_value(xml, "DesignProfileId");
+        try { *out_profile_id = pid.empty() ? 0 : std::stoi(pid); }
+        catch (...) { *out_profile_id = 0; }
+    }
+    return true;
 }
 
 namespace {
@@ -130,7 +405,7 @@ std::string now_seq_id()
 // the Bambu firmware cross-checks the uploaded 3mf against `print.md5`,
 // and the stock libbambu_networking.so always populates that field
 // itself (Studio leaves `params.ftp_file_md5` empty). We mirror that
-// so callers don't have to pre-hash. Returns empty on I/O failure —
+// so callers don't have to pre-hash. Returns empty on I/O failure â€”
 // the firmware will then refuse the job rather than printing garbage.
 std::string md5_of_file(const std::string& path)
 {
@@ -167,7 +442,7 @@ std::string md5_of_file(const std::string& path)
 // upload landed in the FTPS root the `print.file` and `print.url`
 // fields are bare names (`"foo.gcode.3mf"` and `"ftp://foo.gcode.3mf"`),
 // not `"/foo.gcode.3mf"` / `"ftp:///foo..."`. Internally we keep the
-// absolute path for FTP I/O — only the wire form drops the slash.
+// absolute path for FTP I/O â€” only the wire form drops the slash.
 std::string strip_leading_slash(const std::string& s)
 {
     if (!s.empty() && s.front() == '/') return s.substr(1);
@@ -379,10 +654,10 @@ std::string build_project_file_json_impl(const BBL::PrintParams& p,
     //   PrintParams::auto_offset_cali          -> "nozzle_offset_cali"
     //   PrintParams::extruder_cali_manual_mode -> "extrude_cali_manual_mode"
     // Stock plugin parity: `ams_mapping2` is emitted **unconditionally**
-    // — even when AMS isn't in use the field appears as an empty array
+    // â€” even when AMS isn't in use the field appears as an empty array
     // (`"ams_mapping2": []`). Confirmed via `tools/plugin_runner` against
     // the stock libbambu_networking.so on N7 (see NETWORK_PLUGIN.md
-    // §6.8.2 "Per-PrintParams-field mapping" matrix). We feed it
+    // Â§6.8.2 "Per-PrintParams-field mapping" matrix). We feed it
     // verbatim from `params.ams_mapping2` (a JSON-array string from
     // SelectMachineDialog::get_ams_mapping_result), defaulting to `[]`
     // when the caller didn't populate it.
@@ -412,11 +687,11 @@ std::string build_project_file_json_impl(const BBL::PrintParams& p,
     // Driven by `task_timelapse_use_internal` (added to PrintParams in
     // ABI 02.05.03). All other bits stay 0 in every captured stock
     // frame; if more flags surface later, OR them into `cfg_bits` here.
-    // See NETWORK_PLUGIN.md §6.8.2.
+    // See NETWORK_PLUGIN.md Â§6.8.2.
     //
     // Wire-level parity: the cross-ABI `tools/plugin_runner` matrix
     // (02.05.00 -> 02.06.01) showed the stock plugin emits `cfg` in
-    // `project_file` for **every** ABI we tested — older builds simply
+    // `project_file` for **every** ABI we tested â€” older builds simply
     // hardcode `"0"` because the underlying field doesn't exist yet.
     // So we emit unconditionally and gate only the *value* on the ABI
     // bound that introduced `task_timelapse_use_internal`.
@@ -433,7 +708,7 @@ std::string build_project_file_json_impl(const BBL::PrintParams& p,
     // flipped the field from 0 to 1 across both 02.05.00 and 02.06.01).
     // Studio populates this from the user's "Flow dynamics calibration"
     // dropdown; the firmware uses it to short-circuit redundant PA
-    // cali runs. See NETWORK_PLUGIN.md §6.8.2.
+    // cali runs. See NETWORK_PLUGIN.md Â§6.8.2.
     os << ",\"extrude_cali_flag\":" << p.auto_flow_cali;
 
     os << "}}";
@@ -443,11 +718,18 @@ std::string build_project_file_json_impl(const BBL::PrintParams& p,
 } // namespace
 
 std::string build_project_file_json(const BBL::PrintParams& p,
-                                    const ProjectFileOpts&  opts)
+                                    const ProjectFileOpts&  opts,
+                                    int                     plate_index_override)
 {
-    std::string plate_param = "Metadata/plate_" +
-                              std::to_string(p.plate_index <= 0 ? 1 : p.plate_index) +
-                              ".gcode";
+    // plate_index_override > 0 forces a specific plate: the LAN upload path
+    // passes the plate index actually present in the uploaded archive
+    // (archive_plate_gcode_index()), because the archive is uploaded as-is with
+    // its original plate index rather than rewritten to plate_1. When 0, fall
+    // back to the caller-supplied plate_index (e.g. print-from-storage).
+    const int plate = (plate_index_override > 0)
+                          ? plate_index_override
+                          : (p.plate_index <= 0 ? 1 : p.plate_index);
+    std::string plate_param = "Metadata/plate_" + std::to_string(plate) + ".gcode";
     return build_project_file_json_impl(
         p, opts,
         ",\"param\":" + json_escape(plate_param),
@@ -485,8 +767,26 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     if (update_fn) update_fn(BBL::PrintingStageCreate, 0, "");
     if (cancel_fn && cancel_fn()) return BAMBU_NETWORK_ERR_CANCELED;
 
+    // Do NOT rewrite the archive. The host exports the SELECTED plate as an
+    // internally-consistent unit: Metadata/plate_<N>.gcode + slice_info.config
+    // index=N + model_settings.config referencing plate N. Rewriting plate_<N>
+    // -> plate_1 renamed the plate FILES but left slice_info.config's index at
+    // N; the firmware reads that index to locate the plate, fails to reconcile
+    // it with the renamed plate_1.gcode, and reports "couldn't read the file".
+    // Instead upload the archive untouched and point the print command's `param`
+    // at the plate the archive actually carries gcode for â€” the ground truth,
+    // independent of the unreliable ABI plate_index.
+    int src_plate = print_job::archive_plate_gcode_index(params.filename);
+    if (src_plate <= 0) {
+        src_plate = (params.plate_index > 0) ? params.plate_index : 1;
+        OBN_WARN("local_print: no Metadata/plate_<N>.gcode in %s; falling back "
+                 "to plate_index=%d", params.filename.c_str(), src_plate);
+    }
+    OBN_INFO("local_print: printing plate_%d (archive uploaded as-is, no rewrite)",
+             src_plate);
+
     // Stock plugin parity: when `ftp_folder` is empty (which it always
-    // is — Studio never assigns m_ftp_folder anywhere in the public
+    // is â€” Studio never assigns m_ftp_folder anywhere in the public
     // tree, see `3rd_party/BambuStudio/src/slic3r/GUI/Jobs/PrintJob.cpp`)
     // the stock plugin uploads the 3mf to the **FTPS root**, not to
     // `/cache/`. Confirmed by sniffing a real LAN print on N7 with the
@@ -497,11 +797,11 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     // matched no observed traffic; we keep `ftp_folder` honored
     // verbatim so a downstream caller can still target a specific
     // directory if needed (e.g. `"sdcard/"` for printers whose
-    // firmware insists on it). See NETWORK_PLUGIN.md §6.8.2.
+    // firmware insists on it). See NETWORK_PLUGIN.md Â§6.8.2.
     std::string remote_folder = params.ftp_folder;
     if (!remote_folder.empty() && remote_folder.back() != '/') remote_folder += '/';
     if (!remote_folder.empty() && remote_folder.front() == '/') remote_folder.erase(0, 1);
-    // Normalise plate_0→plate_1 in the remote filename only; the archive
+    // Normalise plate_0â†’plate_1 in the remote filename only; the archive
     // itself is uploaded verbatim (matching the stock plugin, which never
     // rewrites the user's .3mf).
     std::string remote_name = print_job::to_print_basename(
@@ -567,7 +867,7 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     } else {
         opts.url = print_job::build_ftp_url(stored_path);
     }
-    // Stock plugin parity: it always populates `print.md5` itself —
+    // Stock plugin parity: it always populates `print.md5` itself â€”
     // Studio's PrintJob never sets `params.ftp_file_md5`. Hash the
     // local 3mf if the caller didn't pre-compute one. Matters because
     // the firmware refuses the job on MD5 mismatch (and an empty
@@ -576,12 +876,15 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     if (opts.md5.empty()) {
         opts.md5 = print_job::md5_of_file(params.filename);
         if (opts.md5.empty()) {
-            OBN_WARN("local_print: failed to MD5 %s — sending empty md5; "
+            OBN_WARN("local_print: failed to MD5 %s â€” sending empty md5; "
                      "the printer will likely reject the job",
                      params.filename.c_str());
         }
     }
-    std::string json = print_job::build_project_file_json(params, opts);
+    // Point the print-start at the plate the uploaded archive actually carries
+    // gcode for (detected above), since the archive is uploaded as-is with its
+    // original plate index rather than rewritten to plate_1.
+    std::string json = print_job::build_project_file_json(params, opts, /*plate_index_override=*/src_plate);
     OBN_DEBUG("local_print mqtt: %s", json.c_str());
 
     int pub = send_message(params.dev_id, json, /*qos=*/0);

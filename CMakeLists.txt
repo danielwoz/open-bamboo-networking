@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(open-bamboo-networking
     VERSION 0.1.0
-    DESCRIPTION "Open Bamboo Networking — open-source replacement for Bambu Studio's bambu_networking plugin"
+    DESCRIPTION "Open Bamboo Networking â€” open-source replacement for Bambu Studio's bambu_networking plugin"
     LANGUAGES C CXX
 )
 
@@ -162,7 +162,7 @@ if(DEFINED OBN_PATCH_STUDIO_CONF AND NOT DEFINED CACHE{OBN_PATCH_CLIENT_CONF})
         "Edit the slicer's conf file after install" FORCE)
 endif()
 
-# Bundled libmosquitto (static + PIC) via FetchContent — always embedded in
+# Bundled libmosquitto (static + PIC) via FetchContent â€” always embedded in
 # libbambu_networking.so. Requires Git and uthash headers at configure time.
 set(OBN_MOSQUITTO_GIT_TAG "v2.1.2"
     CACHE STRING "Git tag for eclipse/mosquitto (FetchContent)")
@@ -285,6 +285,7 @@ add_library(bambu_networking SHARED
     src/config.cpp
     src/cloud_auth.cpp
     src/bind_cloud.cpp
+    src/app_cert.cpp
     src/cloud_filament.cpp
     src/cloud_presets.cpp
     src/cloud_print.cpp
@@ -764,7 +765,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     )
     add_test(NAME lan_live COMMAND lan_live_test)
 
-    # Hermetic unit tests for obn::signing — exercises key loading, canonical
+    # Hermetic unit tests for obn::signing â€” exercises key loading, canonical
     # JSON ordering, signature round-trip and envelope structure validation.
     # Generates ephemeral RSA keys at runtime; no on-disk secrets required.
     add_executable(signing_test tests/signing_test.cpp
@@ -834,7 +835,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     )
     add_test(NAME cloud_print COMMAND cloud_print_test)
 
-    # Hermetic unit tests for obn::oss — pins the SHA-256/HMAC primitives and
+    # Hermetic unit tests for obn::oss â€” pins the SHA-256/HMAC primitives and
     # the AWS SigV4 signing-key derivation against the vendors' published
     # test vectors, plus config parsing and header construction.
     add_executable(oss_sign_test tests/oss_sign_test.cpp
@@ -843,6 +844,17 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     target_include_directories(oss_sign_test PRIVATE include)
     target_link_libraries(oss_sign_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     add_test(NAME oss_sign COMMAND oss_sign_test)
+    add_executable(get_app_cert_test tests/get_app_cert_test.cpp
+        src/app_cert.cpp
+        src/http_client.cpp
+        src/json_lite.cpp
+        src/log.cpp
+        src/os_compat.cpp)
+    target_include_directories(get_app_cert_test PRIVATE include ${OBN_GENERATED_DIR})
+    target_compile_definitions(get_app_cert_test PRIVATE
+        OBN_VERSION_STRING="${OBN_VERSION}"
+        ABI_VERSION=${OBN_ABI_VERSION_HEX})
+    target_link_libraries(get_app_cert_test PRIVATE obn_curl_iface OpenSSL::SSL OpenSSL::Crypto)
 
 endif()
 

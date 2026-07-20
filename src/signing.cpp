@@ -166,6 +166,39 @@ EVP_PKEY* slicer_pkey()
     return key.get();
 }
 
+// --- Application key -------------------------------------------------------
+// create_task's x-bbl-device-security-sign is verified by the cloud against the
+// APP certificate (issued by get_app_cert), not the slicer key. The app private
+// key is loaded from BBL_APP_KEY_PEM, else app_key.pem alongside the slicer key.
+static std::string active_app_key_path()
+{
+    if (const char* e = std::getenv("BBL_APP_KEY_PEM")) if (e[0]) return e;
+    std::string sk = default_key_path();          // .../BambuStudio/slicer_key.pem
+    if (sk.empty()) return {};
+    auto slash = sk.find_last_of("/\\");
+    std::string dir = (slash == std::string::npos) ? std::string(".") : sk.substr(0, slash);
+#ifdef _WIN32
+    return dir + "\\app_key.pem";
+#else
+    return dir + "/app_key.pem";
+#endif
+}
+static std::unique_ptr<EVP_PKEY, PkeyDel> load_app_pkey()
+{
+    std::string path = active_app_key_path();
+    if (path.empty()) return nullptr;
+    std::FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return nullptr;
+    EVP_PKEY* raw = PEM_read_PrivateKey(f, nullptr, nullptr, nullptr);
+    std::fclose(f);
+    return std::unique_ptr<EVP_PKEY, PkeyDel>(raw);
+}
+EVP_PKEY* app_pkey()
+{
+    static const std::unique_ptr<EVP_PKEY, PkeyDel> key = load_app_pkey();
+    return key.get();
+}
+
 
 // RSA-PKCS#1 v1.5 + SHA-256 over `data`, returned as base64.
 std::string rsa_sha256_sign_b64(EVP_PKEY* pkey,
@@ -449,6 +482,50 @@ std::string rsa_pkcs1v15_encrypt_b64(EVP_PKEY* pub, const std::string& plaintext
     } while (remaining > 0);
 
     return base64_encode(out.data(), out.size());
+}
+
+// The app cert_id for create_task's x-bbl-app-certification-id. Priority:
+// BBL_APP_CERT_ID env > app_cert_id.txt alongside the app key (get_app_cert can
+// write it: the leading serial hex of the returned cert).
+const std::string& app_cert_id()
+{
+    static const std::string id = []() -> std::string {
+        if (const char* e = std::getenv("BBL_APP_CERT_ID")) if (e[0]) return e;
+        std::string kp = active_app_key_path();
+        if (kp.empty()) return "";
+        auto slash = kp.find_last_of("/\\");
+        std::string dir = (slash == std::string::npos) ? std::string(".") : kp.substr(0, slash);
+#ifdef _WIN32
+        std::string idp = dir + "\\app_cert_id.txt";
+#else
+        std::string idp = dir + "/app_cert_id.txt";
+#endif
+        std::FILE* f = std::fopen(idp.c_str(), "r");
+        if (!f) return "";
+        char buf[256] = {};
+        if (!std::fgets(buf, sizeof buf, f)) buf[0] = '\0';
+        std::fclose(f);
+        std::string s(buf);
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+        return s;
+    }();
+    return id;
+}
+
+// Like device_security_sign() but signs the timestamp with the APP key -- the
+// key the cloud verifies create_task against (403 with the slicer key).
+std::string device_security_sign_app()
+{
+    EVP_PKEY* pkey = app_pkey();
+    if (!pkey)
+        throw std::runtime_error(
+            "signing: no app key loaded; set BBL_APP_KEY_PEM or place app_key.pem "
+            "alongside slicer_key.pem");
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::string ts = std::to_string(ms);
+    return rsa_pkcs1_sign_raw_b64(
+        pkey, reinterpret_cast<const unsigned char*>(ts.data()), ts.size());
 }
 
 static constexpr char kB64Tbl[] =

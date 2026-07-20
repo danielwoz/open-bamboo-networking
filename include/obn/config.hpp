@@ -33,6 +33,31 @@ struct Settings {
     // Print behavior overrides
     bool force_timelapse_external = false;
 
+    // Route "Send print" through the cloud path (run_cloud_print_job) instead
+    // of the plaintext LAN project_file. Newer firmware (H2/O-series, e.g. O1S)
+    // rejects a plaintext LAN project_file with fail_reason 50348044 ("task
+    // canceled"): it prepares the file then cancels because the print was not
+    // authorized/encrypted the way the cloud path does (RSA param_enc/url_enc).
+    // Mirrors what Bambu Studio does for these printers. Requires block_cloud=0
+    // and a logged-in Bambu account.
+    bool force_cloud_print           = false;
+    // When force_cloud_print is on, choose the channel for the project_file:
+    //   false (default) = cloud channel: full S3 upload + command published via
+    //                     the cloud MQTT broker (matches Studio's observed path).
+    //   true            = LAN channel: upload to the printer over LAN + command
+    //                     published to the printer's local MQTT, still RSA
+    //                     param_enc/url_enc encrypted, plus a cloud task record.
+    // Lets us test both without a rebuild if one channel misbehaves.
+    bool force_cloud_print_lan_channel = false;
+
+    // Path A (hybrid) for O1S/H2S: upload the .gcode.3mf to the printer over
+    // LAN FTPS, but publish the url_enc/param_enc project_file command over the
+    // CLOUD MQTT broker (run_hybrid_print_job). Sidesteps both the LAN-broker
+    // 50348044 cancel and the cloud create_task RSA app-cert 403. Requires
+    // block_cloud=0 and a logged-in Bambu account. Takes precedence over
+    // force_cloud_print when both are set.
+    bool force_hybrid_print          = false;
+
     // File transfer
     bool force_ftps               = false;
 

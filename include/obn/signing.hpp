@@ -41,7 +41,7 @@ std::string sign_bytes(const std::string& data);
 // time in milliseconds, base64-encoded. Matches the proprietary plugin, which
 // signs a fresh timestamp (not the request body) for replay protection.
 // Returns "" when no slicer key is configured (the caller should omit the
-// header rather than fail — it is only enforced on signed writes).
+// header rather than fail â€” it is only enforced on signed writes).
 std::string device_security_sign();
 
 // Standard base64 encoding (RFC 4648, with padding).
@@ -75,5 +75,11 @@ std::string slicer_crl_pem();
 // window, the CRL is within lastUpdate/nextUpdate, and the leaf is not listed
 // as revoked. Gates fire-and-forget app_cert_install (no private key needed).
 bool slicer_app_cert_usable();
+// App cert_id + app-key timestamp signature for create_task. The cloud verifies
+// these against the get_app_cert-issued application certificate (the slicer key
+// yields HTTP 403 on create_task). App key: BBL_APP_KEY_PEM / app_key.pem alongside
+// the slicer key; cert_id: BBL_APP_CERT_ID / app_cert_id.txt.
+const std::string& app_cert_id();
+std::string        device_security_sign_app();
 
 } // namespace obn::signing
