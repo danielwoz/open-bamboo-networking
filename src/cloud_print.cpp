@@ -60,6 +60,86 @@
 #include <system_error>
 #include <thread>
 #include <vector>
+#include "obn/cert_store.hpp"
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <openssl/err.h>
+
+static std::string rsa_pkcs1v15_encrypt_b64(const std::string& pem_path,
+                                             const std::string& plaintext,
+                                             std::string*       err)
+{
+    // Load the X.509 certificate.
+    FILE* f = std::fopen(pem_path.c_str(), "r");
+    if (!f) {
+        if (err) *err = "cannot open cert PEM: " + pem_path;
+        return {};
+    }
+    X509* cert = ::PEM_read_X509(f, nullptr, nullptr, nullptr);
+    std::fclose(f);
+    if (!cert) {
+        unsigned long ecode = ::ERR_peek_last_error();
+        char ebuf[256];
+        ::ERR_error_string_n(ecode, ebuf, sizeof(ebuf));
+        if (err) *err = std::string("PEM_read_X509 failed (") + ebuf + "): " + pem_path;
+        return {};
+    }
+
+    // Extract the public key from the certificate.
+    EVP_PKEY* pkey = ::X509_get_pubkey(cert);
+    ::X509_free(cert);
+    if (!pkey) {
+        if (err) *err = "X509_get_pubkey failed for: " + pem_path;
+        return {};
+    }
+
+    EVP_PKEY_CTX* ctx = ::EVP_PKEY_CTX_new(pkey, nullptr);
+    ::EVP_PKEY_free(pkey);
+    if (!ctx) {
+        if (err) *err = "EVP_PKEY_CTX_new failed";
+        return {};
+    }
+
+    bool setup_ok = (::EVP_PKEY_encrypt_init(ctx) > 0) &&
+                    (::EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PADDING) > 0);
+    if (!setup_ok) {
+        ::EVP_PKEY_CTX_free(ctx);
+        unsigned long ecode = ::ERR_peek_last_error();
+        char ebuf[256];
+        ::ERR_error_string_n(ecode, ebuf, sizeof(ebuf));
+        if (err) *err = std::string("encrypt init/padding failed: ") + ebuf;
+        return {};
+    }
+
+    const auto* pt    = reinterpret_cast<const unsigned char*>(plaintext.data());
+    std::size_t ptlen = plaintext.size();
+
+    // Query required output buffer size.
+    std::size_t outlen = 0;
+    if (::EVP_PKEY_encrypt(ctx, nullptr, &outlen, pt, ptlen) <= 0) {
+        ::EVP_PKEY_CTX_free(ctx);
+        unsigned long ecode = ::ERR_peek_last_error();
+        char ebuf[256];
+        ::ERR_error_string_n(ecode, ebuf, sizeof(ebuf));
+        if (err) *err = std::string("EVP_PKEY_encrypt size query failed: ") + ebuf;
+        return {};
+    }
+
+    std::vector<unsigned char> ct(outlen);
+    if (::EVP_PKEY_encrypt(ctx, ct.data(), &outlen, pt, ptlen) <= 0) {
+        ::EVP_PKEY_CTX_free(ctx);
+        unsigned long ecode = ::ERR_peek_last_error();
+        char ebuf[256];
+        ::ERR_error_string_n(ecode, ebuf, sizeof(ebuf));
+        if (err) *err = std::string("EVP_PKEY_encrypt failed: ") + ebuf;
+        return {};
+    }
+    ::EVP_PKEY_CTX_free(ctx);
+
+    return obn::signing::base64_encode(ct.data(), outlen);
+}
+
 
 namespace obn {
 
@@ -73,9 +153,9 @@ std::string json_escape(const std::string& in)
 
 // Redacts a presigned URL for logging: keeps scheme://host/path and the
 // query-parameter *names* (so we can tell a SigV4 PUT-presign apart from a
-// GET-presign, spot an expiry, etc.) but drops every query *value* Ã¢â‚¬â€ the
+// GET-presign, spot an expiry, etc.) but drops every query *value* ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â the
 // AWS signature and any embedded token must never hit the log. A trailing
-// "?<k1>=Ã¢â‚¬Â¦&<k2>=Ã¢â‚¬Â¦" summary is appended so the shape stays diagnosable.
+// "?<k1>=ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦&<k2>=ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦" summary is appended so the shape stays diagnosable.
 std::string redact_url(const std::string& url)
 {
     const auto q = url.find('?');
@@ -373,9 +453,9 @@ int s3_put(const std::string& url, const std::string& body,
     req.method  = obn::http::Method::PUT;
     req.url     = url;
     // The Bambu cloud presigner returns an S3 signature-V2 query-auth URL
-    // (`?AWSAccessKeyId=Ã¢â‚¬Â¦&Expires=Ã¢â‚¬Â¦&Signature=Ã¢â‚¬Â¦`), confirmed on-wire
+    // (`?AWSAccessKeyId=ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦&Expires=ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦&Signature=ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦`), confirmed on-wire
     // against genuine POST /user/project traffic (us-west-2, 2026-07).
-    // NOT SigV4 Ã¢â‚¬â€ there is no X-Amz-Algorithm / X-Amz-Signature. The V2
+    // NOT SigV4 ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â there is no X-Amz-Algorithm / X-Amz-Signature. The V2
     // StringToSign covers Content-Type, and the presigner signs with an
     // empty one, so we MUST send the PUT without a Content-Type or the
     // signature will not match. Two catches:
@@ -1041,7 +1121,7 @@ int Agent::run_cloud_print_job(const BBL::PrintParams& p,
 
     // Plaintext project_file JSON. send_message prefers LAN MQTT when a
     // session is up; cloud MQTT is only the fallback. REST already recorded
-    // the job for MakerWorld Ã¢â‚¬â€ no need to force cloud for the trigger.
+    // the job for MakerWorld ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â no need to force cloud for the trigger.
     // const std::string mqtt_json = print_job::build_project_file_json(p, opts);
     // OBN_DEBUG("cloud_print mqtt: %s", mqtt_json.c_str());
 

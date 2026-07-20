@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(open-bamboo-networking
     VERSION 0.1.0
-    DESCRIPTION "Open Bamboo Networking â€” open-source replacement for Bambu Studio's bambu_networking plugin"
+    DESCRIPTION "Open Bamboo Networking ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â open-source replacement for Bambu Studio's bambu_networking plugin"
     LANGUAGES C CXX
 )
 
@@ -162,7 +162,7 @@ if(DEFINED OBN_PATCH_STUDIO_CONF AND NOT DEFINED CACHE{OBN_PATCH_CLIENT_CONF})
         "Edit the slicer's conf file after install" FORCE)
 endif()
 
-# Bundled libmosquitto (static + PIC) via FetchContent â€” always embedded in
+# Bundled libmosquitto (static + PIC) via FetchContent ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â always embedded in
 # libbambu_networking.so. Requires Git and uthash headers at configure time.
 set(OBN_MOSQUITTO_GIT_TAG "v2.1.2"
     CACHE STRING "Git tag for eclipse/mosquitto (FetchContent)")
@@ -257,6 +257,30 @@ endif()
 # zlib is shared between BambuSource (FTPS fallback: client-side ZIP
 # extract for file-browser thumbnails) and other zlib users in the tree.
 
+# miniz submodule (third_party/miniz) -- public domain, used by print_job.cpp
+# for in-place 3MF ZIP rewrite. Auto-initialised here so a plain cmake
+# configure works on a fresh clone without a manual submodule update.
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.h")
+    execute_process(
+        COMMAND git submodule update --init third_party/miniz
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+endif()
+add_library(obn_miniz STATIC
+    third_party/miniz/miniz.c
+    third_party/miniz/miniz_tdef.c
+    third_party/miniz/miniz_tinfl.c
+    third_party/miniz/miniz_zip.c
+)
+target_include_directories(obn_miniz PUBLIC third_party)
+set_target_properties(obn_miniz PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# Suppress warnings from vendored code.
+if(MSVC)
+    target_compile_options(obn_miniz PRIVATE /w)
+else()
+    target_compile_options(obn_miniz PRIVATE -w)
+endif()
+
 add_library(bambu_networking SHARED
     src/abi_meta.cpp
     src/abi_lifecycle.cpp
@@ -337,6 +361,7 @@ target_compile_definitions(bambu_networking PRIVATE
     ${_obn_git_compile_defs}
 )
 target_link_libraries(bambu_networking PRIVATE
+    obn_miniz
     obn_mosquitto_iface
     obn_curl_iface
     OpenSSL::SSL
@@ -765,7 +790,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     )
     add_test(NAME lan_live COMMAND lan_live_test)
 
-    # Hermetic unit tests for obn::signing â€” exercises key loading, canonical
+    # Hermetic unit tests for obn::signing ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â exercises key loading, canonical
     # JSON ordering, signature round-trip and envelope structure validation.
     # Generates ephemeral RSA keys at runtime; no on-disk secrets required.
     add_executable(signing_test tests/signing_test.cpp
@@ -835,7 +860,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     )
     add_test(NAME cloud_print COMMAND cloud_print_test)
 
-    # Hermetic unit tests for obn::oss â€” pins the SHA-256/HMAC primitives and
+    # Hermetic unit tests for obn::oss ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pins the SHA-256/HMAC primitives and
     # the AWS SigV4 signing-key derivation against the vendors' published
     # test vectors, plus config parsing and header construction.
     add_executable(oss_sign_test tests/oss_sign_test.cpp

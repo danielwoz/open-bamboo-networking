@@ -38,11 +38,13 @@
 #include <system_error>
 
 #include <openssl/evp.h>
+#include "miniz/miniz.h"
+#include "miniz/miniz_zip.h"
 
 namespace obn::print_job {
 
 // ---------------------------------------------------------------------------
-// Remote filename normalisation (plate_0 â†’ plate_1 rename in the name only)
+// Remote filename normalisation (plate_0 ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ plate_1 rename in the name only)
 // ---------------------------------------------------------------------------
 
 std::string to_print_basename(std::string fname)
@@ -113,7 +115,7 @@ static int plate_gcode_index(const std::string& nm)
 }
 
 // Adds `shift` to the numeric plate index in a per-plate entry name.
-// "Metadata/plate_2.gcode" (shift -1) â†’ "Metadata/plate_1.gcode".
+// "Metadata/plate_2.gcode" (shift -1) ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ "Metadata/plate_1.gcode".
 // Returns nm unchanged when it isn't a per-plate asset.
 static std::string shift_plate_index(const std::string& nm, int shift)
 {
@@ -176,7 +178,7 @@ bool normalise_to_plate_one(const std::string& in_path)
 {
     mz_zip_archive in{};
     if (!mz_zip_reader_init_file(&in, in_path.c_str(), 0)) {
-        // Not a readable ZIP â€” e.g. Orca's access-code probe file
+        // Not a readable ZIP ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â e.g. Orca's access-code probe file
         // (resources/check_access_code.txt) or a raw gcode. Plate
         // normalisation only applies to .3mf spools, so a non-zip is a
         // no-op SUCCESS. Returning false here made send_gcode_to_sdcard fail
@@ -405,7 +407,7 @@ std::string now_seq_id()
 // the Bambu firmware cross-checks the uploaded 3mf against `print.md5`,
 // and the stock libbambu_networking.so always populates that field
 // itself (Studio leaves `params.ftp_file_md5` empty). We mirror that
-// so callers don't have to pre-hash. Returns empty on I/O failure â€”
+// so callers don't have to pre-hash. Returns empty on I/O failure ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // the firmware will then refuse the job rather than printing garbage.
 std::string md5_of_file(const std::string& path)
 {
@@ -442,7 +444,7 @@ std::string md5_of_file(const std::string& path)
 // upload landed in the FTPS root the `print.file` and `print.url`
 // fields are bare names (`"foo.gcode.3mf"` and `"ftp://foo.gcode.3mf"`),
 // not `"/foo.gcode.3mf"` / `"ftp:///foo..."`. Internally we keep the
-// absolute path for FTP I/O â€” only the wire form drops the slash.
+// absolute path for FTP I/O ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â only the wire form drops the slash.
 std::string strip_leading_slash(const std::string& s)
 {
     if (!s.empty() && s.front() == '/') return s.substr(1);
@@ -654,10 +656,10 @@ std::string build_project_file_json_impl(const BBL::PrintParams& p,
     //   PrintParams::auto_offset_cali          -> "nozzle_offset_cali"
     //   PrintParams::extruder_cali_manual_mode -> "extrude_cali_manual_mode"
     // Stock plugin parity: `ams_mapping2` is emitted **unconditionally**
-    // â€” even when AMS isn't in use the field appears as an empty array
+    // ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â even when AMS isn't in use the field appears as an empty array
     // (`"ams_mapping2": []`). Confirmed via `tools/plugin_runner` against
     // the stock libbambu_networking.so on N7 (see NETWORK_PLUGIN.md
-    // Â§6.8.2 "Per-PrintParams-field mapping" matrix). We feed it
+    // Ãƒâ€šÃ‚Â§6.8.2 "Per-PrintParams-field mapping" matrix). We feed it
     // verbatim from `params.ams_mapping2` (a JSON-array string from
     // SelectMachineDialog::get_ams_mapping_result), defaulting to `[]`
     // when the caller didn't populate it.
@@ -687,11 +689,11 @@ std::string build_project_file_json_impl(const BBL::PrintParams& p,
     // Driven by `task_timelapse_use_internal` (added to PrintParams in
     // ABI 02.05.03). All other bits stay 0 in every captured stock
     // frame; if more flags surface later, OR them into `cfg_bits` here.
-    // See NETWORK_PLUGIN.md Â§6.8.2.
+    // See NETWORK_PLUGIN.md Ãƒâ€šÃ‚Â§6.8.2.
     //
     // Wire-level parity: the cross-ABI `tools/plugin_runner` matrix
     // (02.05.00 -> 02.06.01) showed the stock plugin emits `cfg` in
-    // `project_file` for **every** ABI we tested â€” older builds simply
+    // `project_file` for **every** ABI we tested ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â older builds simply
     // hardcode `"0"` because the underlying field doesn't exist yet.
     // So we emit unconditionally and gate only the *value* on the ABI
     // bound that introduced `task_timelapse_use_internal`.
@@ -708,7 +710,7 @@ std::string build_project_file_json_impl(const BBL::PrintParams& p,
     // flipped the field from 0 to 1 across both 02.05.00 and 02.06.01).
     // Studio populates this from the user's "Flow dynamics calibration"
     // dropdown; the firmware uses it to short-circuit redundant PA
-    // cali runs. See NETWORK_PLUGIN.md Â§6.8.2.
+    // cali runs. See NETWORK_PLUGIN.md Ãƒâ€šÃ‚Â§6.8.2.
     os << ",\"extrude_cali_flag\":" << p.auto_flow_cali;
 
     os << "}}";
@@ -734,6 +736,15 @@ std::string build_project_file_json(const BBL::PrintParams& p,
         p, opts,
         ",\"param\":" + json_escape(plate_param),
         ",\"url\":"   + json_escape(opts.url));
+}
+
+std::string build_cloud_project_file_json(const BBL::PrintParams&    p,
+                                          const CloudProjectFileOpts& opts)
+{
+    return build_project_file_json_impl(
+        p, opts,
+        ",\"param_enc\":" + json_escape(opts.param_enc),
+        ",\"url_enc\":"   + json_escape(opts.url_enc));
 }
 
 } // namespace obn::print_job
@@ -774,7 +785,7 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     // N; the firmware reads that index to locate the plate, fails to reconcile
     // it with the renamed plate_1.gcode, and reports "couldn't read the file".
     // Instead upload the archive untouched and point the print command's `param`
-    // at the plate the archive actually carries gcode for â€” the ground truth,
+    // at the plate the archive actually carries gcode for ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ground truth,
     // independent of the unreliable ABI plate_index.
     int src_plate = print_job::archive_plate_gcode_index(params.filename);
     if (src_plate <= 0) {
@@ -786,7 +797,7 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
              src_plate);
 
     // Stock plugin parity: when `ftp_folder` is empty (which it always
-    // is â€” Studio never assigns m_ftp_folder anywhere in the public
+    // is ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Studio never assigns m_ftp_folder anywhere in the public
     // tree, see `3rd_party/BambuStudio/src/slic3r/GUI/Jobs/PrintJob.cpp`)
     // the stock plugin uploads the 3mf to the **FTPS root**, not to
     // `/cache/`. Confirmed by sniffing a real LAN print on N7 with the
@@ -797,11 +808,11 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     // matched no observed traffic; we keep `ftp_folder` honored
     // verbatim so a downstream caller can still target a specific
     // directory if needed (e.g. `"sdcard/"` for printers whose
-    // firmware insists on it). See NETWORK_PLUGIN.md Â§6.8.2.
+    // firmware insists on it). See NETWORK_PLUGIN.md Ãƒâ€šÃ‚Â§6.8.2.
     std::string remote_folder = params.ftp_folder;
     if (!remote_folder.empty() && remote_folder.back() != '/') remote_folder += '/';
     if (!remote_folder.empty() && remote_folder.front() == '/') remote_folder.erase(0, 1);
-    // Normalise plate_0â†’plate_1 in the remote filename only; the archive
+    // Normalise plate_0ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢plate_1 in the remote filename only; the archive
     // itself is uploaded verbatim (matching the stock plugin, which never
     // rewrites the user's .3mf).
     std::string remote_name = print_job::to_print_basename(
@@ -867,7 +878,7 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     } else {
         opts.url = print_job::build_ftp_url(stored_path);
     }
-    // Stock plugin parity: it always populates `print.md5` itself â€”
+    // Stock plugin parity: it always populates `print.md5` itself ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
     // Studio's PrintJob never sets `params.ftp_file_md5`. Hash the
     // local 3mf if the caller didn't pre-compute one. Matters because
     // the firmware refuses the job on MD5 mismatch (and an empty
@@ -876,7 +887,7 @@ int Agent::run_local_print_job(const BBL::PrintParams&   params,
     if (opts.md5.empty()) {
         opts.md5 = print_job::md5_of_file(params.filename);
         if (opts.md5.empty()) {
-            OBN_WARN("local_print: failed to MD5 %s â€” sending empty md5; "
+            OBN_WARN("local_print: failed to MD5 %s ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â sending empty md5; "
                      "the printer will likely reject the job",
                      params.filename.c_str());
         }

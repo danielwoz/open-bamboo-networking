@@ -24,6 +24,25 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#  include <shlobj.h>
+#endif
+
+static std::string default_key_path()
+{
+#ifdef _WIN32
+    char appdata[MAX_PATH] = {};
+    if (SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, appdata) != S_OK)
+        return {};
+    return std::string(appdata) + "\\BambuStudio\\slicer_key.pem";
+#else
+    const char* home = std::getenv("HOME");
+    if (!home || !home[0]) return {};
+    return std::string(home) + "/.config/BambuStudio/slicer_key.pem";
+#endif
+}
+
+
 namespace obn::signing {
 
 namespace {
@@ -94,21 +113,21 @@ const std::string& slicer_cert_id()
 }
 
 // Convert the stored cert_id (`<serial_hex><issuer_dn>`, e.g.
-// `a4e8faaa…192383fCN=GLOF3813734089.bambulab.com`) into the HTTP-header form
+// `a4e8faaaÃ¢â‚¬Â¦192383fCN=GLOF3813734089.bambulab.com`) into the HTTP-header form
 // `<issuer_dn>:<serial_lower>`. The split point is the start of the issuer
 // DN: we find the first '=' (a DN always has one, a hex serial never does)
 // and walk back over the RDN attribute-type letters (e.g. "CN").
 //
 // The tricky part is the serial/issuer boundary. The serial is a LOWERCASE
-// hex string that can END in a hex letter (…192383f), and the issuer's
-// leading RDN attribute type is UPPERCASE (CN, O, OU, C, L, ST, DC, …). A
+// hex string that can END in a hex letter (Ã¢â‚¬Â¦192383f), and the issuer's
+// leading RDN attribute type is UPPERCASE (CN, O, OU, C, L, ST, DC, Ã¢â‚¬Â¦). A
 // naive "walk back over all letters" (std::isalpha) wrongly swallows the
-// serial's trailing 'f' into the issuer, yielding `fCN=…` and a serial short
-// by one nibble — which the cloud rejects with HTTP 403. Conversely a naive
+// serial's trailing 'f' into the issuer, yielding `fCN=Ã¢â‚¬Â¦` and a serial short
+// by one nibble Ã¢â‚¬â€ which the cloud rejects with HTTP 403. Conversely a naive
 // "longest hex prefix" split wrongly swallows the 'C' of "CN" (C is a hex
 // digit). We therefore walk back over UPPERCASE letters only: that keeps the
 // uppercase RDN type ("CN") in the issuer and leaves the lowercase serial
-// (including a trailing a–f) intact.
+// (including a trailing aÃ¢â‚¬â€œf) intact.
 const std::string& app_certification_id()
 {
     static const std::string id = []() -> std::string {
@@ -220,7 +239,7 @@ std::string rsa_sha256_sign_b64(EVP_PKEY* pkey,
     return base64_encode(sig.data(), siglen);
 }
 
-// Raw RSA PKCS#1 v1.5 signature over `data` — the data IS the signed message,
+// Raw RSA PKCS#1 v1.5 signature over `data` Ã¢â‚¬â€ the data IS the signed message,
 // NOT its hash. Unlike rsa_sha256_sign_b64, no digest is applied and no
 // DigestInfo is prepended: the encoded block is 00 01 FF..FF 00 || data.
 // Returned as base64.
@@ -263,7 +282,7 @@ bool is_print_payload(const std::string& payload) noexcept
 // For each cleartext field in kEncryptFields, adds `<field>_enc` (RSA) and
 // drops the cleartext. Idempotent when `*_enc` already exists. If a field
 // needs encryption but there is no device key (or RSA fails), logs ERROR and
-// leaves the cleartext — the printer will reject and surface the error.
+// leaves the cleartext Ã¢â‚¬â€ the printer will reject and surface the error.
 void encrypt_print_fields(obn::json::Object& obj, EVP_PKEY* device_pub)
 {
     static constexpr const char* kEncryptFields[] = {"url", "param"};
@@ -401,7 +420,7 @@ std::string device_security_sign()
     // cloud-connect/print path. The header is only enforced on signed writes.
     if (!pkey) return {};
     // The proprietary plugin signs the *current* time in milliseconds (as a
-    // decimal string) with a raw RSA PKCS#1 v1.5 signature — no hash. The
+    // decimal string) with a raw RSA PKCS#1 v1.5 signature Ã¢â‚¬â€ no hash. The
     // cloud recovers the timestamp from the signature and checks it is recent
     // (replay protection).
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -573,7 +592,7 @@ bool slicer_app_cert_usable()
     const bool expired = !not_after || ::X509_cmp_current_time(not_after) < 0;
     if (not_yet || expired) {
         ::X509_free(cert);
-        OBN_ERROR("signing: slicer app certificate is %s — skipping app_cert_install",
+        OBN_ERROR("signing: slicer app certificate is %s Ã¢â‚¬â€ skipping app_cert_install",
                  expired ? "expired" : "not yet valid");
         return false;
     }
@@ -593,7 +612,7 @@ bool slicer_app_cert_usable()
     }
 
     // lastUpdate (thisUpdate) must be in the past; nextUpdate, when present,
-    // must be in the future. Missing nextUpdate is treated as still valid —
+    // must be in the future. Missing nextUpdate is treated as still valid Ã¢â‚¬â€
     // some CRLs omit it; request_app_cert_install still needs the PEM.
     const ASN1_TIME* last_update = ::X509_CRL_get0_lastUpdate(crl);
     const ASN1_TIME* next_update = ::X509_CRL_get0_nextUpdate(crl);
@@ -602,7 +621,7 @@ bool slicer_app_cert_usable()
     if (crl_not_yet || crl_expired) {
         ::X509_CRL_free(crl);
         ::X509_free(cert);
-        OBN_ERROR("signing: slicer app CRL is %s — skipping app_cert_install",
+        OBN_ERROR("signing: slicer app CRL is %s Ã¢â‚¬â€ skipping app_cert_install",
                  crl_expired ? "expired" : "not yet valid");
         return false;
     }
@@ -613,7 +632,7 @@ bool slicer_app_cert_usable()
         ::X509_CRL_free(crl);
         ::X509_free(cert);
         OBN_ERROR("signing: slicer app certificate is revoked on slicer_crl.pem "
-                  "— skipping app_cert_install");
+                  "Ã¢â‚¬â€ skipping app_cert_install");
         return false;
     }
 

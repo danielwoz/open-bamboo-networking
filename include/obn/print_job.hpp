@@ -15,7 +15,7 @@
 
 namespace obn::print_job {
 
-// Strip path, normalise plate_0â†’plate_1 in the name, ensure .gcode.3mf
+// Strip path, normalise plate_0Ã¢â€ â€™plate_1 in the name, ensure .gcode.3mf
 // extension. Used to compute the remote STOR filename and the
 // project_file url= field so the printer sees plate_1 even when Orca
 // Slicer wrote a plate_0 file.
@@ -30,7 +30,7 @@ std::string to_print_basename(std::string fname);
 // collision. No-op when the archive already contains plate_1.gcode or has no
 // plate gcode at all (BBS-style spools pass through unchanged). The detection
 // keys on the .gcode entry, not any plate_<N>.* asset, so a stray thumbnail
-// can't mask the need to normalise. Returns false only on I/O or ZIP errors â€”
+// can't mask the need to normalise. Returns false only on I/O or ZIP errors Ã¢â‚¬â€
 // the caller should treat false as fatal and refuse the print.
 bool normalise_to_plate_one(const std::string& threemf_path);
 
@@ -56,7 +56,7 @@ std::string pick_remote_name(const BBL::PrintParams& p);
 
 // Remote STOR basename for start_send_gcode_to_sdcard: sanitized
 // project_name verbatim (no .gcode.3mf suffix). Empty when project_name
-// is unset â€” stock libbambu_networking.so fails the upload in that case.
+// is unset Ã¢â‚¬â€ stock libbambu_networking.so fails the upload in that case.
 std::string dest_name_for_send_gcode(const BBL::PrintParams& p);
 
 // True when the print job should upload via :6000 + MQTT brtc:// (P2S/emmc).
@@ -113,5 +113,23 @@ struct ProjectFileOpts {
 std::string build_project_file_json(const BBL::PrintParams& p,
                                     const ProjectFileOpts&  opts,
                                     int                     plate_index_override = 0);
+
+// Cloud-print variant: emits `url_enc` and `param_enc` (RSA-PKCS#1 v1.5
+// encrypted, base64-encoded) instead of the plaintext `url` / `param` fields.
+// The caller is responsible for encrypting the values before calling this
+// function (see cloud_print.cpp: rsa_pkcs1v15_encrypt_b64).
+struct CloudProjectFileOpts {
+    std::string url_enc;      // base64(RSA-PKCS1v1.5-encrypt(url))
+    std::string param_enc;    // base64(RSA-PKCS1v1.5-encrypt("Metadata/plate_N.gcode"))
+    std::string file_path;    // basename / absolute path on printer FS
+    std::string md5;
+    std::string project_id{"0"};
+    std::string profile_id{"0"};
+    std::string task_id{"0"};
+    std::string subtask_id{"0"};
+};
+
+std::string build_cloud_project_file_json(const BBL::PrintParams&    p,
+                                          const CloudProjectFileOpts& opts);
 
 } // namespace obn::print_job
