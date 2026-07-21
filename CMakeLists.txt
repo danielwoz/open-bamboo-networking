@@ -91,8 +91,17 @@ configure_file(
 # Optional build-time-embedded signing key/cert (see cmake/obn_embedded_signing.h.in).
 # Sourced from the environment, never from a CMake cache entry, so the value
 # never lands in CMakeCache.txt. Empty by default.
+#
+# string(STRIP) trims a trailing newline some secret stores preserve verbatim
+# from the source file (e.g. `gh secret set X < file.txt`) -- left in, that
+# newline lands inside the plain-quoted kSlicerCertId literal and breaks the
+# build with "newline in constant" on every compiler. Safe for the PEM key
+# too: it only trims leading/trailing whitespace, never touches the
+# internal line breaks PEM parsing requires.
 set(OBN_EMBEDDED_SLICER_KEY_PEM "$ENV{OBN_SLICER_KEY_PEM}")
 set(OBN_EMBEDDED_SLICER_CERT_ID "$ENV{OBN_SLICER_CERT_ID}")
+string(STRIP "${OBN_EMBEDDED_SLICER_KEY_PEM}" OBN_EMBEDDED_SLICER_KEY_PEM)
+string(STRIP "${OBN_EMBEDDED_SLICER_CERT_ID}" OBN_EMBEDDED_SLICER_CERT_ID)
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/obn_embedded_signing.h.in"
     "${OBN_GENERATED_DIR}/obn_embedded_signing.h"
