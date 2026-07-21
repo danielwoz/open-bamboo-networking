@@ -497,6 +497,11 @@ struct Tunnel {
     // Local MJPEG auth is deferred until Bambu_StartStream (file browser
     // uses Bambu_StartStreamEx without the 80-byte 0x3000 auth packet).
     bool mjpg_authed = false;
+    // First frame header, read during Bambu_StartStream to prove the printer
+    // really opened a video stream. Handed to the first Bambu_ReadSample so
+    // validating costs no data.
+    bool    mjpg_hdr_pending = false;
+    uint8_t mjpg_hdr[16]     = {0};
 
     // ---- PrinterFileSystem CTRL state (Scheme::Local + CTRL_TYPE) ----
     // When Studio calls Bambu_StartStreamEx(CTRL_TYPE), we keep the TLS
@@ -1721,14 +1726,47 @@ OBN_EXPORT int Bambu_StartStream(Bambu_Tunnel tunnel, bool /*video*/)
     if (t->url.scheme == Scheme::Local && !t->ctrl_mode && !t->mjpg_authed) {
         uint8_t auth[80];
         build_auth_packet(t->url, auth);
-        std::lock_guard<std::mutex> lk(t->mjpg_io_mu);
-        if (obn::tls::ssl_write_all(t->ssl, auth, sizeof(auth)) != 0) {
-            set_last_error("MJPEG auth write failed");
-            return -1;
+        {
+            // Scoped: ssl_read_all() below takes mjpg_io_mu itself, and it is
+            // not a recursive mutex.
+            std::lock_guard<std::mutex> lk(t->mjpg_io_mu);
+            if (obn::tls::ssl_write_all(t->ssl, auth, sizeof(auth)) != 0) {
+                set_last_error("MJPEG auth write failed");
+                return -1;
+            }
         }
         t->mjpg_authed = true;
         log_fmt(t->logger, t->log_ctx,
                 "Bambu_StartStream: sent %zu-byte MJPEG auth", sizeof(auth));
+
+        // Prove the printer actually accepted the video request. Models that
+        // do not serve MJPEG here (H2/O1S-class) answer the auth with a short
+        // error record and hang up; without this check we would report a
+        // healthy stream and the host would sit on a black pane forever.
+        // The header is kept for the first ReadSample, so nothing is lost.
+        uint8_t hdr[16];
+        int hrc = ssl_read_all(t, hdr, sizeof(hdr));
+        if (hrc == 0) {
+            auto h32 = [&](size_t off) -> uint32_t {
+                return  (static_cast<uint32_t>(hdr[off + 0]))
+                      | (static_cast<uint32_t>(hdr[off + 1]) << 8)
+                      | (static_cast<uint32_t>(hdr[off + 2]) << 16)
+                      | (static_cast<uint32_t>(hdr[off + 3]) << 24);
+            };
+            const uint32_t payload_size = h32(0);
+            const uint32_t itrack       = h32(4);
+            if (payload_size < 4 || payload_size > kMaxFrameSize || itrack > 8) {
+                log_fmt(t->logger, t->log_ctx,
+                        "Bambu_StartStream: printer refused the video stream "
+                        "(payload_size=%u itrack=0x%x)", payload_size, itrack);
+                set_last_error("printer does not serve MJPEG video on this port");
+                return -1;
+            }
+            std::memcpy(t->mjpg_hdr, hdr, sizeof(hdr));
+            t->mjpg_hdr_pending = true;
+        }
+        // hrc != 0 means EOF or a read error rather than a refusal; leave that
+        // for ReadSample to surface so behaviour is unchanged on slow cameras.
     }
     return Bambu_success;
 }
@@ -1822,14 +1860,21 @@ OBN_EXPORT int Bambu_ReadSample(Bambu_Tunnel tunnel, Bambu_Sample* sample)
 
     if (!t->ssl) return -1;
 
-    // Read 16-byte frame header.
+    // Read 16-byte frame header -- or reuse the one StartStream already
+    // consumed while checking that the printer accepted the stream.
     uint8_t hdr[16];
-    int rc = ssl_read_all(t, hdr, sizeof(hdr));
-    if (rc < 0) {
-        set_last_error("header read failed");
-        return -1;
+    int rc = 0;
+    if (t->mjpg_hdr_pending) {
+        std::memcpy(hdr, t->mjpg_hdr, sizeof(hdr));
+        t->mjpg_hdr_pending = false;
+    } else {
+        rc = ssl_read_all(t, hdr, sizeof(hdr));
+        if (rc < 0) {
+            set_last_error("header read failed");
+            return -1;
+        }
+        if (rc > 0) return Bambu_stream_end;
     }
-    if (rc > 0) return Bambu_stream_end;
 
     auto u32 = [&](size_t off) -> uint32_t {
         return  (static_cast<uint32_t>(hdr[off + 0]))
