@@ -15,6 +15,7 @@
 #include "obn/auth.hpp"
 #include "obn/bambu_networking.hpp"
 #include "obn/mqtt_client.hpp"
+#include "obn/camera.hpp"
 
 namespace obn {
 namespace ssdp { class Discovery; }
@@ -210,6 +211,18 @@ public:
     int run_send_gcode_to_sdcard(const BBL::PrintParams& params,
                                  BBL::OnUpdateStatusFn   update_fn,
                                  BBL::WasCancelledFn     cancel_fn);
+
+    // -----------------------------
+    // Camera session management.
+    // -----------------------------
+    // Called lazily from get_camera_url() the first time the user opens the
+    // camera tab.  Looks up IP / model / access_code from internal maps.
+    // No-op if already started or if the printer model doesn't support it.
+    void maybe_setup_camera(const std::string& dev_id);
+
+    // Called on disconnect_printer() / destructor to tear down any active
+    // camera session for this dev_id.
+    void stop_camera(const std::string& dev_id);
 
     // Implements bambu_network_start_sdcard_print: the "Print" button
     // from Device -> Files. The file is already on the printer's
@@ -548,11 +561,16 @@ private:
     // so camera_url_for() works in cloud-only sessions.
     std::unordered_map<std::string, std::string> lan_access_code_by_dev_;
     // Reverse of the lan_tls ip->serial registry: last known LAN IP per
-    // dev_id (SSDP / connect_printer). Used by camera_url_for().
+    // dev_id (SSDP / connect_printer). Used by camera_url_for() and by
+    // maybe_setup_camera() to reach the printer's MJPEG endpoint.
     std::unordered_map<std::string, std::string> lan_ip_by_dev_;
     // Latched LAN liveview protocol per dev_id ("rtsps"/"rtsp"), parsed
     // from push_status ipcam.rtsp_url by harvest_media_caps().
     std::unordered_map<std::string, std::string> lan_lv_proto_by_dev_;
+
+    // dev_id -> dev_type from SSDP, used by maybe_setup_camera() to pick the
+    // LAN vs. Agora/TUTK camera source for the printer's model.
+    std::unordered_map<std::string, std::string> dev_model_by_id_;
 
     // dev_ids for which an asynchronous LAN-autostart worker is currently
     // running, so the ~5s SSDP / access-code hooks don't stack duplicate

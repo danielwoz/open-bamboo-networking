@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "obn/bambu_networking.hpp"
+#include "obn/camera.hpp"
 #include "obn/cert_store.hpp"
 #include "obn/cloud_auth.hpp"
 #include "obn/cloud_session.hpp"
@@ -277,9 +278,11 @@ int Agent::disconnect_printer()
         }
     }
 
+    std::string dev_id_snap;
     std::unique_ptr<LanSession> session;
     {
         std::lock_guard<std::mutex> lk(mu_);
+        if (lan_session_) dev_id_snap = lan_session_->dev_id();
         session = std::move(lan_session_);
     }
     if (session) {
@@ -289,7 +292,42 @@ int Agent::disconnect_printer()
         std::lock_guard<std::mutex> lk(mu_);
         app_cert_install_sent_.erase(session->dev_id());
     }
+    if (!dev_id_snap.empty()) stop_camera(dev_id_snap);
     return BAMBU_NETWORK_SUCCESS;
+}
+
+void Agent::maybe_setup_camera(const std::string& dev_id)
+{
+    // Already started — idempotent.
+    if (!obn::camera::get_url(dev_id).empty()) return;
+
+    std::string ip, access_code, model;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto ip_it = lan_ip_by_dev_.find(dev_id);
+        if (ip_it == lan_ip_by_dev_.end()) return; // not a LAN printer we know
+        ip = ip_it->second;
+        auto ac_it = lan_access_code_by_dev_.find(dev_id);
+        if (ac_it != lan_access_code_by_dev_.end()) access_code = ac_it->second;
+        auto m_it = dev_model_by_id_.find(dev_id);
+        if (m_it != dev_model_by_id_.end()) model = m_it->second;
+    }
+
+    obn::camera::CameraSpec spec;
+    spec.dev_id      = dev_id;
+    spec.model       = model;
+    spec.lan_ip      = ip;
+    spec.access_code = access_code;
+    std::string url = obn::camera::start_camera(spec);
+    if (url.empty())
+        OBN_DEBUG("camera: no source for %s (model='%s')", dev_id.c_str(), model.c_str());
+    else
+        OBN_INFO("camera: %s → %s", dev_id.c_str(), url.c_str());
+}
+
+void Agent::stop_camera(const std::string& dev_id)
+{
+    obn::camera::stop_camera(dev_id);
 }
 
 bool Agent::ensure_lan_session(const std::string& dev_id,
@@ -1954,7 +1992,8 @@ void Agent::cache_ssdp_json_for_bind(const std::string& json)
     if (!root) return;
     std::string ip = trim_ip_string(root->find("dev_ip").as_string());
     if (ip.empty()) return;
-    const std::string dev_id = root->find("dev_id").as_string();
+    const std::string dev_id   = root->find("dev_id").as_string();
+    const std::string dev_type = root->find("dev_type").as_string();
     if (!dev_id.empty()) {
         obn::lan_tls::registry_put_ip_serial(ip, dev_id);
         // SSDP is the only place a cloud-only session learns the printer's
@@ -1968,6 +2007,8 @@ void Agent::cache_ssdp_json_for_bind(const std::string& json)
         std::lock_guard<std::mutex> lk(mu_);
         ssdp_json_by_ip_[ip] = json;
         if (!dev_id.empty()) lan_ip_by_dev_[dev_id] = ip;
+        if (!dev_id.empty() && !dev_type.empty())
+            dev_model_by_id_[dev_id] = dev_type;
     }
     // SSDP just supplied (or refreshed) the LAN IP; if the access code for the
     // selected printer is already known, this completes the credential pair and
