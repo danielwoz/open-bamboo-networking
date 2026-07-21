@@ -897,3 +897,10 @@ endif()
 # from a shell, which is as useful on Windows as it is on Linux.
 add_subdirectory(tools/liveview_capture)
 add_subdirectory(tools/obn_fetch_device_cert)
+
+# bs_probe drives the BambuSource C ABI directly so a camera failure can be
+# attributed to the transport rather than to the slicer's media pipeline.
+# Windows-only: it LoadLibrary's BambuSource.dll.
+if(WIN32)
+    add_subdirectory(tools/bs_probe)
+endif()
