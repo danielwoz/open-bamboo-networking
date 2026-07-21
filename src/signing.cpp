@@ -7,6 +7,7 @@
 #include "obn/config.hpp"
 #include "obn/json_lite.hpp"
 #include "obn/log.hpp"
+#include "obn_embedded_signing.h"
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -88,7 +89,9 @@ const std::string& slicer_cert_id()
         if (!cfg.empty()) return cfg;
         std::string from_file = load_cert_id_from_file();
         if (!from_file.empty()) return from_file;
-        return "";
+        // Build-time-embedded fallback (see load_pkey()); empty when
+        // OBN_SLICER_CERT_ID was never set at configure time.
+        return std::string(obn::signing::embedded::kSlicerCertId);
     }();
     return id;
 }
@@ -146,18 +149,34 @@ std::string slicer_crl_pem()
 
 namespace {
 
+// Parses a PEM private key from an in-memory buffer (the build-time-embedded
+// fallback below), as opposed to load_pkey()'s on-disk PEM_read_PrivateKey.
+static std::unique_ptr<EVP_PKEY, PkeyDel> load_pkey_from_memory(const char* pem)
+{
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(
+        BIO_new_mem_buf(pem, -1), &BIO_free);
+    if (!bio) return nullptr;
+    EVP_PKEY* raw = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr);
+    return std::unique_ptr<EVP_PKEY, PkeyDel>(raw);
+}
+
 static std::unique_ptr<EVP_PKEY, PkeyDel> load_pkey()
 {
     std::string path = resolve_key_path();
-    if (path.empty()) return nullptr;
-
-    std::FILE* f = std::fopen(path.c_str(), "r");
-    if (!f) return nullptr;
-
-    EVP_PKEY* raw = PEM_read_PrivateKey(f, nullptr, nullptr, nullptr);
-    std::fclose(f);
-
-    return std::unique_ptr<EVP_PKEY, PkeyDel>(raw);
+    if (!path.empty()) {
+        std::FILE* f = std::fopen(path.c_str(), "r");
+        if (f) {
+            EVP_PKEY* raw = PEM_read_PrivateKey(f, nullptr, nullptr, nullptr);
+            std::fclose(f);
+            if (raw) return std::unique_ptr<EVP_PKEY, PkeyDel>(raw);
+        }
+    }
+    // Fall back to the build-time-embedded key when no on-disk key loaded
+    // (file missing, or OBN_SLICER_KEY_PEM was never set -- the latter makes
+    // this a no-op, since kSlicerKeyPem is then an empty string).
+    if (obn::signing::embedded::kSlicerKeyPem[0] != '\0')
+        return load_pkey_from_memory(obn::signing::embedded::kSlicerKeyPem);
+    return nullptr;
 }
 
 EVP_PKEY* slicer_pkey()

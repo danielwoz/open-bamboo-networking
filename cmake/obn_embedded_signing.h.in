@@ -1,0 +1,15 @@
+#pragma once
+
+// Build-time-embedded slicer signing key/cert, so a build can sign requests
+// without slicer_key.pem / slicer_cert_id.txt present in the config
+// directory at runtime. Populated from the OBN_SLICER_KEY_PEM /
+// OBN_SLICER_CERT_ID environment variables at configure time (see
+// CMakeLists.txt); both are empty by default, which preserves the normal
+// load-from-config-dir behavior for anyone who doesn't set them.
+
+namespace obn::signing::embedded {
+
+inline constexpr char kSlicerKeyPem[] = R"obn(@OBN_EMBEDDED_SLICER_KEY_PEM@)obn";
+inline constexpr char kSlicerCertId[] = "@OBN_EMBEDDED_SLICER_CERT_ID@";
+
+} // namespace obn::signing::embedded

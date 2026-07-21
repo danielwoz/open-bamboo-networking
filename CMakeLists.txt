@@ -88,6 +88,16 @@ configure_file(
     "${OBN_GENERATED_DIR}/obn_conf_default.h"
     @ONLY)
 
+# Optional build-time-embedded signing key/cert (see cmake/obn_embedded_signing.h.in).
+# Sourced from the environment, never from a CMake cache entry, so the value
+# never lands in CMakeCache.txt. Empty by default.
+set(OBN_EMBEDDED_SLICER_KEY_PEM "$ENV{OBN_SLICER_KEY_PEM}")
+set(OBN_EMBEDDED_SLICER_CERT_ID "$ENV{OBN_SLICER_CERT_ID}")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/obn_embedded_signing.h.in"
+    "${OBN_GENERATED_DIR}/obn_embedded_signing.h"
+    @ONLY)
+
 option(OBN_RELEASE "Build a release (show project version instead of commit hash)" OFF)
 
 # Extract OBN_PROJECT_VERSION from the single source of truth: include/obn/version.hpp
