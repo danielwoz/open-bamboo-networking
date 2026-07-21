@@ -268,10 +268,12 @@ jobs:
 
   # build-macos-intel:
   #   name: v${{ matrix.abi }}.xx-macos-x64
-  #   # Uncomment this job to enable Intel macOS interim builds. Use macos-13
-  #   # (standard, genuinely Intel), not macos-latest-large -- that label
-  #   # needs GitHub's paid Larger Runners entitlement (Team/Enterprise) and
-  #   # silently never gets a runner assigned without it.
+  #   # As of 2026-07, neither hosted-Intel-macOS option works: macos-latest-large
+  #   # needs GitHub's paid Larger Runners entitlement (Team/Enterprise) and fails
+  #   # fast with zero steps run when unavailable; macos-13 (the standard image)
+  #   # queues forever with no runner ever assigned (confirmed stuck 1.5h+) --
+  #   # GitHub appears to have fully retired hosted Intel macOS runners. Don't
+  #   # uncomment this job until/unless that changes.
   #   needs: [discover-abi]
   #   runs-on: macos-13
   #   strategy:

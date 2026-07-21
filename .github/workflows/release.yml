@@ -202,12 +202,14 @@ jobs:
   build-macos:
     name: v${{ matrix.abi }}.xx-macos-${{ matrix.arch }}
     needs: [preflight]
-    # x64 uses the standard macos-13 runner (genuinely Intel), not
-    # macos-latest-large -- that label needs GitHub's paid Larger Runners
-    # entitlement (Team/Enterprise), which this account doesn't have, and the
-    # job never gets a runner assigned when it's unavailable (silent
-    # zero-step failure, not a build error).
-    runs-on: ${{ matrix.arch == 'arm64' && 'macos-latest' || 'macos-13' }}
+    # arm64 only. Neither Intel macOS option works on this account:
+    # macos-latest-large needs GitHub's paid Larger Runners entitlement
+    # (Team/Enterprise) and fails fast with zero steps run when unavailable;
+    # macos-13 (the standard non-large Intel image) queues forever with no
+    # runner ever assigned (confirmed stuck 1.5h+, runner_name stays "") --
+    # GitHub appears to have fully retired hosted Intel macOS runners by this
+    # point. Apple Silicon is the only macOS target GitHub still offers.
+    runs-on: macos-latest
     env:
       OBN_SLICER_KEY_PEM: ${{ secrets.OBN_SLICER_KEY_PEM }}
       OBN_SLICER_CERT_ID: ${{ secrets.OBN_SLICER_CERT_ID }}
@@ -217,7 +219,6 @@ jobs:
         abi: ${{ fromJSON(needs.preflight.outputs.abi-matrix) }}
         arch:
           - arm64
-          - x64
 
     steps:
       - name: Checkout
