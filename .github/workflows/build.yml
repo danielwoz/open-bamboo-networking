@@ -268,9 +268,12 @@ jobs:
 
   # build-macos-intel:
   #   name: v${{ matrix.abi }}.xx-macos-x64
-  #   # Uncomment this job to enable Intel macOS interim builds (macos-latest-large).
+  #   # Uncomment this job to enable Intel macOS interim builds. Use macos-13
+  #   # (standard, genuinely Intel), not macos-latest-large -- that label
+  #   # needs GitHub's paid Larger Runners entitlement (Team/Enterprise) and
+  #   # silently never gets a runner assigned without it.
   #   needs: [discover-abi]
-  #   runs-on: macos-latest-large
+  #   runs-on: macos-13
   #   strategy:
   #     fail-fast: false
   #     matrix:

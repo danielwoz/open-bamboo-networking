@@ -202,7 +202,12 @@ jobs:
   build-macos:
     name: v${{ matrix.abi }}.xx-macos-${{ matrix.arch }}
     needs: [preflight]
-    runs-on: ${{ matrix.arch == 'arm64' && 'macos-latest' || 'macos-latest-large' }}
+    # x64 uses the standard macos-13 runner (genuinely Intel), not
+    # macos-latest-large -- that label needs GitHub's paid Larger Runners
+    # entitlement (Team/Enterprise), which this account doesn't have, and the
+    # job never gets a runner assigned when it's unavailable (silent
+    # zero-step failure, not a build error).
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-latest' || 'macos-13' }}
     env:
       OBN_SLICER_KEY_PEM: ${{ secrets.OBN_SLICER_KEY_PEM }}
       OBN_SLICER_CERT_ID: ${{ secrets.OBN_SLICER_CERT_ID }}
