@@ -469,6 +469,63 @@ bool make_h264_media_type(AM_MEDIA_TYPE* mt)
 // (TLS:6000 framed JPEG). Studio's downstream is the MJPEG decoder
 // MFT or the standard MJPEG video decoder filter; both accept
 // MEDIASUBTYPE_MJPG with a VIDEOINFOHEADER carrying a 'MJPG' fourcc.
+// Resolution of the active MJPEG stream, learned by probing one frame in Load().
+// It varies by model/setting (1280x720 on P1/720p, 1536x1080 on A1/1080p); the
+// Windows MJPEG Decompressor connects at whatever the output type declares, so a
+// wrong size renders black. Genuine libBambuSource has no JPEG decoder either and
+// learns the size the same way. One active camera stream in practice.
+static std::atomic<int> g_probed_w{0};
+static std::atomic<int> g_probed_h{0};
+
+// Pixel width/height from a JPEG's SOF0..3 marker.
+static bool parse_jpeg_dimensions(const std::uint8_t* d, std::size_t n, int& w, int& h)
+{
+    std::size_t i = 2; // past SOI
+    while (i + 9 < n) {
+        if (d[i] != 0xFF) { ++i; continue; }
+        std::uint8_t m = d[i + 1];
+        if (m == 0xD8 || m == 0xD9 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }
+        if (m >= 0xC0 && m <= 0xC3) {            // SOF0/1/2/3
+            h = (d[i + 5] << 8) | d[i + 6];
+            w = (d[i + 7] << 8) | d[i + 8];
+            return w > 0 && h > 0;
+        }
+        std::size_t seg = (d[i + 2] << 8) | d[i + 3];
+        if (seg < 2) return false;
+        i += 2 + seg;
+    }
+    return false;
+}
+
+// Connect, send the 80-byte MJPEG auth, read one framed JPEG, return its size.
+// Self-contained so it does not depend on worker helpers declared later.
+static bool probe_mjpeg_dimensions(const ParsedUrl& url, int& w, int& h)
+{
+    obn::os::socket_t fd = obn::os::kInvalidSocket;
+    SSL* ssl = nullptr;
+    if (obn::tls::dial_tls(url.host, url.port, /*timeout_ms=*/5000, &fd, &ssl) != 0)
+        return false;
+    std::uint8_t auth[80] = {0};
+    auth[0] = 0x40;                 // payload size
+    auth[4] = 0x00; auth[5] = 0x30; // packet type 0x3000 (little-endian)
+    std::memcpy(auth + 16, url.user.data(),   std::min<std::size_t>(url.user.size(), 32));
+    std::memcpy(auth + 48, url.passwd.data(), std::min<std::size_t>(url.passwd.size(), 32));
+    bool ok = false;
+    if (obn::tls::ssl_write_all(ssl, auth, sizeof(auth)) == 0) {
+        std::uint8_t hdr[16];
+        if (obn::tls::ssl_read_full(ssl, hdr, sizeof(hdr)) == 0) {
+            std::uint32_t payload = hdr[0] | (hdr[1] << 8) | (hdr[2] << 16) | (hdr[3] << 24);
+            if (payload >= 4 && payload <= 8u * 1024 * 1024) {
+                std::vector<std::uint8_t> jpg(payload);
+                if (obn::tls::ssl_read_full(ssl, jpg.data(), payload) == 0)
+                    ok = parse_jpeg_dimensions(jpg.data(), jpg.size(), w, h);
+            }
+        }
+    }
+    obn::tls::close_tls(&fd, &ssl);
+    return ok;
+}
+
 bool make_mjpeg_media_type(AM_MEDIA_TYPE* mt)
 {
     std::memset(mt, 0, sizeof(*mt));
@@ -483,14 +540,18 @@ bool make_mjpeg_media_type(AM_MEDIA_TYPE* mt)
     if (!mt->pbFormat) { mt->cbFormat = 0; return false; }
     std::memset(mt->pbFormat, 0, mt->cbFormat);
     auto* vih = reinterpret_cast<VIDEOINFOHEADER*>(mt->pbFormat);
+    const int pw = g_probed_w.load(std::memory_order_relaxed);
+    const int ph = g_probed_h.load(std::memory_order_relaxed);
+    const int cw = pw > 0 ? pw : 1280;   // fall back to 720p until a probe lands
+    const int ch = ph > 0 ? ph : 720;
     vih->AvgTimePerFrame          = 666666; // ~15 fps; A1/P1 cap there
     vih->bmiHeader.biSize         = sizeof(BITMAPINFOHEADER);
-    vih->bmiHeader.biWidth        = 1280;
-    vih->bmiHeader.biHeight       = 720;
+    vih->bmiHeader.biWidth        = cw;
+    vih->bmiHeader.biHeight       = ch;
     vih->bmiHeader.biPlanes       = 1;
     vih->bmiHeader.biBitCount     = 24;
     vih->bmiHeader.biCompression  = MAKEFOURCC('M','J','P','G');
-    vih->bmiHeader.biSizeImage    = 0;
+    vih->bmiHeader.biSizeImage    = static_cast<DWORD>(cw) * ch * 3;
     return true;
 }
 
@@ -1319,6 +1380,18 @@ HRESULT STDMETHODCALLTYPE BambuSourceFilter::Load(LPCOLESTR lpwszFileName,
         "dshow: parsed scheme=%d host=%s port=%d user=%s path=%s",
         static_cast<int>(pu.scheme), pu.host.c_str(), pu.port,
         pu.user.c_str(), pu.path.c_str());
+    if (pu.scheme == UrlScheme::Local) {
+        int pw = 0, ph = 0;
+        if (probe_mjpeg_dimensions(pu, pw, ph)) {
+            g_probed_w.store(pw, std::memory_order_relaxed);
+            g_probed_h.store(ph, std::memory_order_relaxed);
+            log_at(LL_INFO, kNoLogger, nullptr,
+                   "dshow: probed stream resolution %dx%d", pw, ph);
+        } else {
+            log_at(LL_WARN, kNoLogger, nullptr,
+                   "dshow: resolution probe failed; using default");
+        }
+    }
     std::lock_guard<std::mutex> lk(mu_);
     url_w_      = lpwszFileName;
     url_        = std::move(pu);

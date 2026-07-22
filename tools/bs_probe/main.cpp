@@ -47,6 +47,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     const char* dll = (argc > 2) ? argv[2] : "BambuSource.dll";
+    bool dump = (argc > 3 && argv[3][0] == 'd');
     HMODULE h = LoadLibraryA(dll);
     if (!h) { printf("LoadLibrary failed: %lu\n", GetLastError()); return 1; }
     printf("loaded %s\n", dll);
@@ -94,7 +95,17 @@ int main(int argc, char** argv) {
     while (GetTickCount() - t0 < 15000) {
         Bambu_Sample s; memset(&s, 0, sizeof s);
         int r = Read(t, &s);
-        if (r == 0) { frames++; bytes += s.size; }
+        if (r == 0) {
+            frames++; bytes += s.size;
+            if (dump && frames <= 3 && s.buffer && s.size > 4) {
+                char fn[64]; snprintf(fn, sizeof fn, "frame_%d.jpg", frames);
+                FILE* f = fopen(fn, "wb");
+                if (f) { fwrite(s.buffer, 1, s.size, f); fclose(f);
+                    printf("  wrote %s (%d bytes, first=%02x %02x last=%02x %02x)\n",
+                           fn, s.size, s.buffer[0], s.buffer[1],
+                           s.buffer[s.size-2], s.buffer[s.size-1]); }
+            }
+        }
         else { errs++; Sleep(20); }
     }
     printf("RESULT: frames=%d bytes=%lld errors=%d\n", frames, bytes, errs);

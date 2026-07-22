@@ -903,4 +903,5 @@ add_subdirectory(tools/obn_fetch_device_cert)
 # Windows-only: it LoadLibrary's BambuSource.dll.
 if(WIN32)
     add_subdirectory(tools/bs_probe)
+    add_subdirectory(tools/dshow_render_test)
 endif()
