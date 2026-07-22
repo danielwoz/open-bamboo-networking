@@ -36,6 +36,15 @@ std::string rsa_pkcs1v15_encrypt_b64(EVP_PKEY* pub, const std::string& plaintext
 // Returns the base64-encoded RSA-PKCS#1 v1.5 + SHA-256 signature.
 std::string sign_bytes(const std::string& data);
 
+// Wraps `{"<key>":<inner_json>}` in the standard signed header envelope used
+// by device MQTT commands (same shape maybe_sign builds for "print"). The
+// signature (RSA_SHA256, base64) is computed over the exact bytes
+// `{"<key>":<inner_json>}`, and payload_len is their length. `inner_json` must
+// already be the serialized value for `key` (e.g. a compact sorted-key object
+// dump from json_lite). Returns "" when no slicer key is configured. Used for
+// the camera `liveview/prepare` arming command.
+std::string sign_envelope(const std::string& key, const std::string& inner_json);
+
 // Computes the x-bbl-device-security-sign header value for cloud REST
 // requests: a raw RSA PKCS#1 v1.5 signature (no hash) over the current Unix
 // time in milliseconds, base64-encoded. Matches the proprietary plugin, which

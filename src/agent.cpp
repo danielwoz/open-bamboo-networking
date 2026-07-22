@@ -1209,6 +1209,17 @@ std::string Agent::camera_ticket_url_for(const std::string& dev_id)
         return {};
     }
 
+    // Arm the LAN camera before handing the URL to the IOTC path: the cloud
+    // ttcode by itself does not open the printer's camera listener. The printer
+    // only starts its IOTC/AV session after it receives a signed liveview/prepare
+    // enc_msg (naming this ttcode, RSA-encrypted for the device) over LAN MQTT.
+    // Best-effort: on any failure we still return the URL so the existing path
+    // is unchanged, and the arm keeps working over the persistent LAN session.
+    if (!liveview_prepare(dev_id, uid, authkey, passwd, region)) {
+        OBN_INFO("camera_ticket: dev=%s liveview arm not confirmed; "
+                 "continuing with IOTC connect", dev_id.c_str());
+    }
+
     // Emit the genuine scheme: uid + authkey + passwd (+ region + device).
     // OssTutkCameraSource::parse_url_() reads these exact keys.
     std::string u = "bambu:///tutk?uid=" + uid;
@@ -1220,6 +1231,160 @@ std::string Agent::camera_ticket_url_for(const std::string& dev_id)
              dev_id.c_str(), region.empty() ? "?" : region.c_str(),
              authkey.empty() ? "no" : "yes");
     return u;
+}
+
+void Agent::harvest_liveview_report(const std::string& dev_id,
+                                    const std::string& json)
+{
+    // Prefilter: only the printer's liveview reply carries this key.
+    if (json.find("\"liveview\"") == std::string::npos) return;
+
+    std::shared_ptr<LiveviewWait> wait;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = liveview_waits_.find(dev_id);
+        if (it == liveview_waits_.end()) return; // nobody arming this device
+        wait = it->second;
+    }
+
+    std::string perr;
+    auto root = obn::json::parse(json, &perr);
+    if (!root) return;
+    const obn::json::Value& lv = root->find("liveview");
+    if (lv.kind() != obn::json::Value::Kind::Object) return;
+
+    // The reply echoes the command; a status frame that merely mentions
+    // "liveview" (e.g. an ipcam block) has no result/authkey/reason and is
+    // ignored so a stray telemetry frame can't wake the waiter early.
+    const std::string result  = lv.find("result").as_string();
+    const std::string authkey = lv.find("authkey").as_string();
+    const std::string reason  = lv.find("reason").as_string();
+    if (result.empty() && authkey.empty() && reason.empty()) return;
+
+    {
+        std::lock_guard<std::mutex> lk(wait->mu);
+        wait->done    = true;
+        wait->result  = result.empty() ? (authkey.empty() ? "fail" : "succeed")
+                                       : result;
+        wait->authkey = authkey;
+        wait->passwd  = lv.find("passwd").as_string();
+        wait->region  = lv.find("region").as_string();
+        wait->reason  = reason;
+    }
+    wait->cv.notify_all();
+}
+
+bool Agent::liveview_prepare(const std::string& dev_id,
+                             const std::string& ttcode,
+                             const std::string& authkey,
+                             const std::string& passwd,
+                             const std::string& region)
+{
+    if (dev_id.empty() || ttcode.empty()) return false;
+
+    // Need a live LAN session to this exact printer: the arming enc_msg goes
+    // over device/<dev_id>/request and the printer de-arms the moment the MQTT
+    // session that armed it drops, so we must publish over the persistent
+    // connection Studio keeps open (not a throwaway one).
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!lan_session_ || lan_session_->dev_id() != dev_id ||
+            !lan_session_->is_connected()) {
+            OBN_INFO("liveview_prepare: dev=%s no live LAN session; skipping arm",
+                     dev_id.c_str());
+            return false;
+        }
+    }
+
+    // Device pubkey from its 8883 server cert (CN=<dev_id>) — same cache the
+    // print.command url_enc/param_enc encryption uses.
+    EVP_PKEY* dev_pub = cert_store::get_printer_pub_key(dev_id);
+    if (!dev_pub) {
+        OBN_INFO("liveview_prepare: dev=%s device pubkey unavailable; skipping arm",
+                 dev_id.c_str());
+        return false;
+    }
+
+    std::string enc_err;
+    const std::string ttcode_enc =
+        obn::signing::rsa_pkcs1v15_encrypt_b64(dev_pub, ttcode, &enc_err);
+    EVP_PKEY_free(dev_pub);
+    if (ttcode_enc.empty()) {
+        OBN_WARN("liveview_prepare: dev=%s ttcode encrypt failed: %s",
+                 dev_id.c_str(), enc_err.empty() ? "unknown" : enc_err.c_str());
+        return false;
+    }
+
+    // Build the liveview payload. json_lite's Object is a std::map, so dump()
+    // emits sorted keys with compact separators — matching the byte layout the
+    // signature is computed over.
+    const std::string seq = std::to_string(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count() % 100000);
+    obn::json::Object body;
+    body["command"]     = obn::json::Value(std::string("prepare"));
+    body["sequence_id"] = obn::json::Value(seq);
+    body["ttcode_enc"]  = obn::json::Value(ttcode_enc);
+    if (!passwd.empty())  body["passwd"]  = obn::json::Value(passwd);
+    if (!authkey.empty()) body["authkey"] = obn::json::Value(authkey);
+    if (!region.empty())  body["region"]  = obn::json::Value(region);
+    const std::string inner = obn::json::Value(std::move(body)).dump();
+
+    const std::string envelope = obn::signing::sign_envelope("liveview", inner);
+    if (envelope.empty()) {
+        OBN_WARN("liveview_prepare: dev=%s no slicer key; cannot sign arm",
+                 dev_id.c_str());
+        return false;
+    }
+
+    // Register the report waiter before publishing so we can't miss a fast
+    // reply that lands between publish and wait.
+    auto wait = std::make_shared<LiveviewWait>();
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        liveview_waits_[dev_id] = wait;
+    }
+
+    int rc = BAMBU_NETWORK_ERR_INVALID_HANDLE;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (lan_session_ && lan_session_->dev_id() == dev_id)
+            rc = lan_session_->publish_json(envelope, /*qos=*/0);
+    }
+    if (rc != BAMBU_NETWORK_SUCCESS) {
+        OBN_WARN("liveview_prepare: dev=%s publish failed rc=%d", dev_id.c_str(), rc);
+        std::lock_guard<std::mutex> lk(mu_);
+        liveview_waits_.erase(dev_id);
+        return false;
+    }
+    OBN_INFO("liveview_prepare: dev=%s sent signed arm (%zuB), awaiting report",
+             dev_id.c_str(), envelope.size());
+
+    bool succeeded = false;
+    std::string result, reason;
+    {
+        std::unique_lock<std::mutex> lk(wait->mu);
+        wait->cv.wait_for(lk, std::chrono::seconds(8),
+                          [&] { return wait->done; });
+        succeeded = (wait->result == "succeed");
+        result    = wait->result;
+        reason    = wait->reason;
+    }
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        liveview_waits_.erase(dev_id);
+    }
+
+    if (succeeded) {
+        OBN_INFO("liveview_prepare: dev=%s device ARMED (result=succeed)",
+                 dev_id.c_str());
+        return true;
+    }
+    OBN_INFO("liveview_prepare: dev=%s not armed (result=%s reason=%s)",
+             dev_id.c_str(),
+             result.empty() ? "<timeout>" : result.c_str(),
+             reason.empty() ? "-" : reason.c_str());
+    return false;
 }
 
 std::string Agent::camera_url_for(const std::string& dev_id)
@@ -1265,6 +1430,7 @@ void Agent::notify_local_message(const std::string& dev_id, const std::string& j
     harvest_security_report(dev_id, json);
     harvest_security_flags(dev_id, json);
     harvest_media_caps(dev_id, json);
+    harvest_liveview_report(dev_id, json);
 
     // LAN telemetry is authoritative: stamp the report and, on the first one,
     // defer-close the cloud report subscription for this device.

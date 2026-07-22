@@ -379,6 +379,36 @@ std::string sign_bytes(const std::string& data)
         reinterpret_cast<const unsigned char*>(data.data()), data.size());
 }
 
+std::string sign_envelope(const std::string& key, const std::string& inner_json)
+{
+    EVP_PKEY* pkey = slicer_pkey();
+    if (!pkey) return {};
+
+    const std::string to_sign = "{\"" + key + "\":" + inner_json + "}";
+    const std::string sig_b64 = rsa_sha256_sign_b64(
+        pkey,
+        reinterpret_cast<const unsigned char*>(to_sign.data()), to_sign.size());
+
+    std::string out;
+    out.reserve(to_sign.size() + sig_b64.size() + 200);
+    out += "{\"header\":{\"cert_id\":\"";
+    out += json_str_escape(slicer_cert_id());
+    out += "\",\"payload_len\":";
+    out += std::to_string(to_sign.size());
+    out += ",\"sign_alg\":\"";
+    out += kSignAlg;
+    out += "\",\"sign_string\":\"";
+    out += json_str_escape(sig_b64);
+    out += "\",\"sign_ver\":\"";
+    out += kSignVer;
+    out += "\"},\"";
+    out += key;
+    out += "\":";
+    out += inner_json;
+    out += '}';
+    return out;
+}
+
 std::string device_security_sign()
 {
     EVP_PKEY* pkey = slicer_pkey();
