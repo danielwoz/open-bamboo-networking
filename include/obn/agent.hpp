@@ -412,23 +412,6 @@ public:
     // answers 403 for O1S/H2-class printers).
     std::string camera_ticket_url_for(const std::string& dev_id);
 
-    // Arms the printer's LAN camera session with a signed liveview/prepare
-    // command. The cloud ttcode alone does not authorize the LAN camera: the
-    // printer only opens its IOTC/AV listener after it receives a slicer-key
-    // signed enc_msg naming the ttcode (RSA-encrypted for the device) over its
-    // device/<dev_id>/request MQTT topic, and answers on .../report with
-    // {"liveview":{"result":"succeed",...}}. Reuses obn::signing (same key and
-    // cert_id as print.command / the ttcode request) and the device pubkey from
-    // its 8883 server cert (cert_store). Publishes over the live LAN session and
-    // waits up to a few seconds for the "succeed" report. Returns true on a
-    // "succeed" reply; false (with a logged reason) when the pubkey/MQTT/key is
-    // unavailable or the device rejects — the caller proceeds either way, so a
-    // failure degrades gracefully rather than blocking the camera open.
-    bool liveview_prepare(const std::string& dev_id,
-                          const std::string& ttcode,
-                          const std::string& authkey,
-                          const std::string& passwd,
-                          const std::string& region);
     // Friendly name from the last SSDP packet for this printer IP, or "".
     std::string device_display_name_for_ip(const std::string& dev_ip) const;
     // Bearer + optional Studio certification headers for api.bambulab.com.
@@ -479,29 +462,6 @@ private:
     // over RTSP(S) instead of MJPEG :6000 on X1/P1S/P2S-class printers.
     void harvest_media_caps(const std::string& dev_id,
                             const std::string& json);
-
-    // Scans a LAN report frame for a {"liveview":{...}} block (the printer's
-    // answer to liveview_prepare) and, when one is present, hands its
-    // result/authkey/reason to the pending liveview_prepare waiter for the
-    // device. Cheap substring prefilter; full JSON parse only on candidates.
-    void harvest_liveview_report(const std::string& dev_id,
-                                 const std::string& json);
-
-    // Rendezvous state for one in-flight liveview_prepare: the arming thread
-    // waits on cv_ while a LAN report thread (harvest_liveview_report) fills in
-    // the device's reply and signals. Guarded by its own mutex.
-    struct LiveviewWait {
-        std::mutex              mu;
-        std::condition_variable cv;
-        bool                    done = false;
-        std::string             result;   // "succeed" / "fail"
-        std::string             authkey;
-        std::string             passwd;
-        std::string             region;
-        std::string             reason;   // device error text on failure
-    };
-    // Pending liveview_prepare waiters keyed by dev_id. Guarded by mu_.
-    std::map<std::string, std::shared_ptr<LiveviewWait>> liveview_waits_;
 
     // Publishes the LAN-TLS peer pin for (ip -> dev_id) so the env-only
     // consumers (:6000 FileTransfer tunnel, FTPS, camera in libBambuSource)

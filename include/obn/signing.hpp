@@ -41,8 +41,8 @@ std::string sign_bytes(const std::string& data);
 // signature (RSA_SHA256, base64) is computed over the exact bytes
 // `{"<key>":<inner_json>}`, and payload_len is their length. `inner_json` must
 // already be the serialized value for `key` (e.g. a compact sorted-key object
-// dump from json_lite). Returns "" when no slicer key is configured. Used for
-// the camera `liveview/prepare` arming command.
+// dump from json_lite). Returns "" when no slicer key is configured. Used to
+// build slicer-key-signed device MQTT command envelopes.
 std::string sign_envelope(const std::string& key, const std::string& inner_json);
 
 // Computes the x-bbl-device-security-sign header value for cloud REST
