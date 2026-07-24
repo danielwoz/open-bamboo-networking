@@ -889,3 +889,9 @@ endif()
 if(NOT WIN32)
     add_subdirectory(tools/h2s_capture_video)
 endif()
+
+# liveview_capture streams a printer's liveview camera (TUTK/Agora cloud relay
+# or LAN JPEG) to a playable .mp4 via a self-contained ISO-BMFF muxer. POSIX-only.
+if(NOT WIN32)
+    add_subdirectory(tools/liveview_capture)
+endif()
