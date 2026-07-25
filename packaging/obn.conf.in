@@ -122,7 +122,7 @@ slicer_crl_pem =
 # The MakerWorld "POST /my/task" endpoint authorizes access to uploaded
 # print content ONLY for the stock client name "BambuStudio".
 
-client_name = OpenBambooNetworking
+client_name = BambuStudio
 
 # Path to the login session persistence file.
 # If empty, uses session.json in this config directory.
