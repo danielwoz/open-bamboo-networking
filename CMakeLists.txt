@@ -893,4 +893,5 @@ endif()
 # or LAN JPEG) to a playable .mp4 via a self-contained ISO-BMFF muxer. POSIX-only.
 if(NOT WIN32)
     add_subdirectory(tools/liveview_capture)
+    add_subdirectory(tools/obn_fetch_device_cert)
 endif()
