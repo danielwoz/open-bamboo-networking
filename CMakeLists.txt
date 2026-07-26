@@ -788,6 +788,8 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     # Generates ephemeral RSA keys at runtime; no on-disk secrets required.
     add_executable(signing_test tests/signing_test.cpp
         tests/config_stub.cpp
+        src/cloud_auth.cpp
+        src/http_client.cpp
         src/json_lite.cpp
         src/log.cpp
         src/os_compat.cpp
@@ -796,7 +798,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     target_compile_definitions(signing_test PRIVATE
         OBN_VERSION_STRING="${OBN_VERSION}"
         ABI_VERSION=${OBN_ABI_VERSION_HEX})
-    target_link_libraries(signing_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    target_link_libraries(signing_test PRIVATE obn_curl_iface OpenSSL::SSL OpenSSL::Crypto)
     add_test(NAME signing COMMAND signing_test)
 
     # Pure-function tests for cloud_print.cpp (ams_mapping2_for_cloud,

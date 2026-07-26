@@ -108,4 +108,7 @@ DeviceCertResult fetch_device_cert(const std::string& region,
                                    const std::string& application_token,
                                    const std::string& aes256_key);
 
+// Decrypts the base64-encoded AES-256-CBC encrypted private key using the 32-byte AES key.
+std::string decrypt_device_key(const std::string& base64_key, const std::string& aes256_key);
+
 } // namespace obn::cloud

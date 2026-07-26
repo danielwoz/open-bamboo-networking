@@ -22,4 +22,14 @@ std::string path_in_dir(const std::string& basename)
     return (std::filesystem::path(g_test_dir) / basename).string();
 }
 
+std::string cloud_api_host_for(const Settings&, const std::string&)
+{
+    return "https://api.bambulab.com";
+}
+
+std::string cloud_web_host_for(const Settings&, const std::string&)
+{
+    return "https://bambulab.com";
+}
+
 } // namespace obn::config

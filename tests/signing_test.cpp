@@ -2,6 +2,7 @@
 // verification using a freshly generated RSA test keypair.
 
 #include "obn/signing.hpp"
+#include "obn/cloud_auth.hpp"
 #include "obn/config.hpp"
 #include "obn/json_lite.hpp"
 
@@ -427,13 +428,40 @@ namespace obn::config {
     std::string& test_dir();
 }
 
+int test_device_key_decryption()
+{
+    const std::string aes_key = "0123456789abcdef0123456789abcdef"; // 32 bytes
+    const std::string expected_pem = "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKg\n-----END PRIVATE KEY-----\n";
+
+    // Encrypt expected_pem using AES-256-CBC with zero IV
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    CHECK(ctx != nullptr);
+    unsigned char iv[16] = {0};
+    CHECK(EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr,
+                            reinterpret_cast<const unsigned char*>(aes_key.data()), iv) == 1);
+    std::vector<uint8_t> cipher(expected_pem.size() + 32);
+    int len1 = 0, len2 = 0;
+    CHECK(EVP_EncryptUpdate(ctx, cipher.data(), &len1,
+                            reinterpret_cast<const unsigned char*>(expected_pem.data()),
+                            static_cast<int>(expected_pem.size())) == 1);
+    CHECK(EVP_EncryptFinal_ex(ctx, cipher.data() + len1, &len2) == 1);
+    EVP_CIPHER_CTX_free(ctx);
+    cipher.resize(len1 + len2);
+
+    std::string b64_enc = obn::signing::base64_encode(cipher.data(), cipher.size());
+
+    // Test decryption helper
+    std::string decrypted = obn::cloud::decrypt_device_key(b64_enc, aes_key);
+    CHECK(decrypted == expected_pem);
+    return 0;
+}
+
 int main()
 {
     // Generate fresh RSA-2048 keypair for signing tests.
     g_test_key = EVP_RSA_gen(2048);
     if (!g_test_key) { std::cerr << "EVP_RSA_gen failed\n"; return 1; }
 
-    // Write private key to a temp PEM file and point the config at it.
     char tmp_path[] = "/tmp/signing_test_XXXXXX";
     int fd = mkstemp(tmp_path);
     if (fd < 0) { std::cerr << "mkstemp failed\n"; EVP_PKEY_free(g_test_key); return 1; }
@@ -470,6 +498,7 @@ int main()
     if (test_no_device_key_leaves_cleartext() != 0) rc = 1;
     if (test_param_enc_idempotent()        != 0) rc = 1;
     if (test_blockwise_multiblock_roundtrip() != 0) rc = 1;
+    if (test_device_key_decryption()      != 0) rc = 1;
 
     if (rc == 0) std::cout << "signing_test: ok\n";
 

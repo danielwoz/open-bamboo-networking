@@ -4,6 +4,7 @@
 #include "obn/config.hpp"
 #include "obn/http_client.hpp"
 #include "obn/json_lite.hpp"
+#include "obn/log.hpp"
 
 #include <sstream>
 
@@ -172,7 +173,75 @@ ProfileResult get_profile(const std::string& region,
     return r;
 }
 
-#if 0 // NOT YET WIRED - kept as documentation; application_token derivation unconfirmed
+std::string decrypt_device_key(const std::string& base64_key, const std::string& aes256_key)
+{
+    if (base64_key.empty() || aes256_key.empty()) return {};
+
+    // 1. Decode base64 encrypted payload
+    std::vector<uint8_t> cipher(base64_key.size());
+    EVP_ENCODE_CTX* b64_ctx = EVP_ENCODE_CTX_new();
+    if (!b64_ctx) return {};
+    EVP_DecodeInit(b64_ctx);
+    int out_len = 0, final_len = 0;
+    EVP_DecodeUpdate(b64_ctx, cipher.data(), &out_len,
+                     reinterpret_cast<const unsigned char*>(base64_key.data()),
+                     static_cast<int>(base64_key.size()));
+    EVP_DecodeFinal(b64_ctx, cipher.data() + out_len, &final_len);
+    EVP_ENCODE_CTX_free(b64_ctx);
+    cipher.resize(out_len + final_len);
+
+    if (cipher.size() < 16) return {};
+
+    // 2. Prepare 32-byte AES key
+    std::vector<uint8_t> raw_key;
+    if (aes256_key.size() == 32) {
+        raw_key.assign(aes256_key.begin(), aes256_key.end());
+    } else {
+        raw_key.resize(aes256_key.size());
+        EVP_ENCODE_CTX* k_ctx = EVP_ENCODE_CTX_new();
+        if (k_ctx) {
+            EVP_DecodeInit(k_ctx);
+            int k_out = 0, k_fin = 0;
+            EVP_DecodeUpdate(k_ctx, raw_key.data(), &k_out,
+                             reinterpret_cast<const unsigned char*>(aes256_key.data()),
+                             static_cast<int>(aes256_key.size()));
+            EVP_DecodeFinal(k_ctx, raw_key.data() + k_out, &k_fin);
+            EVP_ENCODE_CTX_free(k_ctx);
+            raw_key.resize(k_out + k_fin);
+        }
+    }
+    if (raw_key.size() != 32) {
+        OBN_INFO("decrypt_device_key: key size %zu != 32 bytes", raw_key.size());
+        return {};
+    }
+
+    // 3. AES-256-CBC Decrypt
+    std::vector<uint8_t> plain(cipher.size());
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return {};
+
+    unsigned char iv[16] = {0};
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr, raw_key.data(), iv) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return {};
+    }
+
+    int p_out1 = 0, p_out2 = 0;
+    if (EVP_DecryptUpdate(ctx, plain.data(), &p_out1, cipher.data(), static_cast<int>(cipher.size())) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return {};
+    }
+
+    if (EVP_DecryptFinal_ex(ctx, plain.data() + p_out1, &p_out2) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return {};
+    }
+    EVP_CIPHER_CTX_free(ctx);
+
+    plain.resize(p_out1 + p_out2);
+    return std::string(plain.begin(), plain.end());
+}
+
 DeviceCertResult fetch_device_cert(const std::string& region,
                                    const std::string& access_token,
                                    const std::string& application_token,
@@ -185,8 +254,6 @@ DeviceCertResult fetch_device_cert(const std::string& region,
     }
     // Endpoint confirmed from MITM capture of the stock plugin:
     //   GET /v1/iot-service/api/user/applications/{token}/cert?aes256={key}&ver=1
-    // The client generates a random 32-byte AES key, base64url-encodes it, and
-    // passes it here so the server can encrypt the returned private key with it.
     const std::string encoded_token = obn::http::url_encode(application_token);
     const std::string encoded_key   = obn::http::url_encode(aes256_key);
     std::string url = api_host(region)
@@ -195,8 +262,6 @@ DeviceCertResult fetch_device_cert(const std::string& region,
         + "/cert?aes256="
         + encoded_key
         + "&ver=1";
-    // Full stock identity block (ordered by http::perform). Genuine get_app_cert
-    // sends neither X-BBL-Client-ID nor Content-Type.
     auto hdrs = obn::bbl::identity_headers(access_token, /*user_id*/std::string{},
                                            /*include_client_id*/false,
                                            /*with_content_type*/false);
@@ -217,26 +282,21 @@ DeviceCertResult fetch_device_cert(const std::string& region,
         r.error_message = "bad JSON: " + perr;
         return r;
     }
-    // Response shape (from MITM capture):
-    //   {"cert": "<3-cert PEM chain>", "crl": ["<PEM CRL>"],
-    //    "key": "<AES-256-CBC encrypted private key, base64>"}
-    // Chain order: device leaf -> per-device intermediate CA
-    // ("{dev_uid}.bambulab.com") -> Bambu root CA.
-    // CRL is valid ~30 days; refresh before expiry to maintain MQTT auth.
-    // Decrypt `key` with AES-256-CBC using the caller's base64url-decoded
-    // aes256_key before passing it to mosquitto.
     r.cert = root->find("cert").as_string();
-    // crl is an array of PEM strings; take the first entry.
     {
         auto crl_v = root->find("crl");
         const auto& crl_arr = crl_v.as_array();
         if (!crl_arr.empty()) r.crl = crl_arr[0].as_string();
     }
-    r.key  = root->find("key").as_string();
-    r.ok   = !r.cert.empty();
+    std::string enc_key = root->find("key").as_string();
+    if (!enc_key.empty() && !aes256_key.empty()) {
+        r.key = decrypt_device_key(enc_key, aes256_key);
+    } else {
+        r.key = enc_key;
+    }
+    r.ok = !r.cert.empty();
     if (!r.ok) r.error_message = "cert field missing in response";
     return r;
 }
-#endif // NOT YET WIRED
 
 } // namespace obn::cloud
