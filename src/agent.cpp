@@ -1175,11 +1175,7 @@ std::string Agent::camera_ticket_url_for(const std::string& dev_id)
     // the same app-certification headers as create_task: an id naming the app
     // cert (issuer:serial) and a raw PKCS#1 v1.5 signature over the current
     // timestamp (replay-protected). Without them the cloud returns 403.
-    auto hdrs = cloud_api_http_headers(false, true);
-    const std::string cert_id  = obn::signing::app_certification_id();
-    const std::string sec_sign = obn::signing::device_security_sign();
-    if (!cert_id.empty())  hdrs["x-bbl-app-certification-id"] = cert_id;
-    if (!sec_sign.empty()) hdrs["x-bbl-device-security-sign"] = sec_sign;
+    auto hdrs = cloud_api_http_headers(/*include_client_id=*/false, /*with_content_type=*/true, /*with_signing_headers=*/true);
     auto resp = obn::http::post_json(url, body, hdrs);
     if (!resp.error.empty()) {
         OBN_INFO("camera_ticket: dev=%s transport: %s", dev_id.c_str(),
@@ -2182,7 +2178,8 @@ std::string Agent::device_display_name_for_ip(const std::string& dev_ip) const
 }
 
 std::map<std::string, std::string>
-Agent::cloud_api_http_headers(bool include_client_id, bool with_content_type) const
+Agent::cloud_api_http_headers(bool include_client_id, bool with_content_type,
+                             bool with_signing_headers) const
 {
     obn::auth::Session                 s;
     std::map<std::string, std::string> extra;
@@ -2197,7 +2194,8 @@ Agent::cloud_api_http_headers(bool include_client_id, bool with_content_type) co
     // Exception: with OBN_ALLOW_VERSION_OVERRIDES set, the host slicer's own
     // version headers win instead, so its real versions are presented.
     auto h = obn::bbl::identity_headers(s.access_token, s.user_id,
-                                        include_client_id, with_content_type);
+                                        include_client_id, with_content_type,
+                                        with_signing_headers);
     const bool allow_ver = obn::versions::allow_overrides();
     auto is_version_header = [](std::string k) {
         for (char& c : k) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');

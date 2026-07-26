@@ -419,7 +419,8 @@ public:
     // http::perform). include_client_id / with_content_type select the
     // per-call variation the stock agent uses (see agent.cpp).
     std::map<std::string, std::string> cloud_api_http_headers(
-        bool include_client_id = true, bool with_content_type = true) const;
+        bool include_client_id = true, bool with_content_type = true,
+        bool with_signing_headers = false) const;
 
     // ------------------------------------------------------------------
     // User preset cache (bambu_network_get_setting_list2 -> get_user_presets).

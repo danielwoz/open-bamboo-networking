@@ -21,19 +21,113 @@
 #include "camera/ICameraSource.hpp"
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
+#include <openssl/evp.h>
 
 namespace cam = bambu_net::camera;
 
 #define LOG(fmt, ...)  do { std::fprintf(stdout, "[liveview] " fmt "\n", ##__VA_ARGS__); std::fflush(stdout); } while (0)
 #define ERR(fmt, ...)  do { std::fprintf(stderr, "[liveview] " fmt "\n", ##__VA_ARGS__); } while (0)
+
+static std::string default_bambustudio_config_dir() {
+#if defined(_WIN32)
+    if (const char* appdata = std::getenv("APPDATA")) {
+        return (std::filesystem::path(appdata) / "BambuStudio").string();
+    }
+    if (const char* userprofile = std::getenv("USERPROFILE")) {
+        return (std::filesystem::path(userprofile) / "AppData" / "Roaming" / "BambuStudio").string();
+    }
+    return ".";
+#elif defined(__APPLE__)
+    if (const char* home = std::getenv("HOME")) {
+        return (std::filesystem::path(home) / "Library" / "Application Support" / "BambuStudio").string();
+    }
+    return ".";
+#else
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME")) {
+        return (std::filesystem::path(xdg) / "BambuStudio").string();
+    }
+    if (const char* home = std::getenv("HOME")) {
+        return (std::filesystem::path(home) / ".config" / "BambuStudio").string();
+    }
+    return ".";
+#endif
+}
+
+static std::vector<uint8_t> load_network_engine_key(const std::string& config_dir) {
+    std::filesystem::path key_path = std::filesystem::path(config_dir) / "network_engine.key";
+    std::string def_dir = default_bambustudio_config_dir();
+    if (!std::filesystem::exists(key_path) && config_dir != def_dir) {
+        std::filesystem::path alt_path = std::filesystem::path(def_dir) / "network_engine.key";
+        if (std::filesystem::exists(alt_path)) {
+            key_path = alt_path;
+        }
+    }
+
+    if (!std::filesystem::exists(key_path)) {
+        ERR("network_engine.key not found in %s", key_path.parent_path().string().c_str());
+        return {};
+    }
+
+    std::ifstream ifs(key_path, std::ios::binary);
+    if (!ifs.is_open()) {
+        ERR("failed to open %s", key_path.string().c_str());
+        return {};
+    }
+
+    std::string raw_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    ifs.close();
+
+    if (raw_content.size() == 16) {
+        return std::vector<uint8_t>(raw_content.begin(), raw_content.end());
+    }
+
+    std::string trimmed = raw_content;
+    while (!trimmed.empty() && (trimmed.back() == '\r' || trimmed.back() == '\n' || trimmed.back() == ' ' || trimmed.back() == '\t')) {
+        trimmed.pop_back();
+    }
+    size_t start = 0;
+    while (start < trimmed.size() && (trimmed[start] == ' ' || trimmed[start] == '\t' || trimmed[start] == '\r' || trimmed[start] == '\n')) {
+        start++;
+    }
+    if (start > 0) trimmed = trimmed.substr(start);
+
+    if (trimmed.size() == 16) {
+        return std::vector<uint8_t>(trimmed.begin(), trimmed.end());
+    }
+
+    if (trimmed.size() == 32) {
+        bool is_hex = true;
+        std::vector<uint8_t> bytes;
+        bytes.reserve(16);
+        for (size_t i = 0; i < 32; i += 2) {
+            char h1 = trimmed[i];
+            char h2 = trimmed[i+1];
+            if (!std::isxdigit(static_cast<unsigned char>(h1)) || !std::isxdigit(static_cast<unsigned char>(h2))) {
+                is_hex = false;
+                break;
+            }
+            uint8_t b = static_cast<uint8_t>(std::stoi(trimmed.substr(i, 2), nullptr, 16));
+            bytes.push_back(b);
+        }
+        if (is_hex && bytes.size() == 16) {
+            return bytes;
+        }
+    }
+
+    ERR("invalid network_engine.key in %s (expected 16 bytes or 32 hex characters)", key_path.string().c_str());
+    return {};
+}
 
 // ---------------------------------------------------------------------------
 // SIGINT: flip an atomic; the frame loop finalises cleanly.
@@ -433,8 +527,7 @@ int main(int argc, char** argv) {
     if (dev_id.empty() || out.empty()) { ERR("--dev-id and --out are required"); usage(); return 2; }
 
     if (config_dir.empty()) {
-        const char* home = std::getenv("HOME");
-        config_dir = std::string(home ? home : ".") + "/.config/BambuStudio";
+        config_dir = default_bambustudio_config_dir();
     }
     // Sets obn::config::current() so signing finds slicer_key.pem / slicer_cert_id
     // and cloud endpoints resolve per obn.conf.
@@ -458,6 +551,52 @@ int main(int argc, char** argv) {
         if (!access_token.empty()) sess.access_token = access_token;
         if (!user_id.empty())      sess.user_id      = user_id;
         if (!region.empty())       sess.region       = region;
+
+        // Fallback: if obn.auth.json is empty, try BambuNetworkEngine.conf
+        if (sess.access_token.empty() || sess.user_id.empty()) {
+            std::string conf_path = config_dir + "/BambuNetworkEngine.conf";
+            if (std::filesystem::exists(conf_path)) {
+                LOG("obn.auth.json empty, trying BambuNetworkEngine.conf fallback");
+                std::vector<uint8_t> key = load_network_engine_key(config_dir);
+                if (key.size() == 16) {
+                    std::ifstream ifs(conf_path, std::ios::binary);
+                    if (ifs.is_open()) {
+                        // Read the encrypted conf file
+                        std::vector<uint8_t> conf_data((std::istreambuf_iterator<char>(ifs)),
+                                                       std::istreambuf_iterator<char>());
+                        ifs.close();
+
+                        std::vector<uint8_t> decrypted(conf_data.size());
+                        EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+                        EVP_DecryptInit_ex(ctx, EVP_aes_128_ecb(), nullptr, key.data(), nullptr);
+                        EVP_CIPHER_CTX_set_padding(ctx, 0);  // no padding
+                        int out_len = 0;
+                        EVP_DecryptUpdate(ctx, decrypted.data(), &out_len, conf_data.data(), conf_data.size());
+                        EVP_CIPHER_CTX_free(ctx);
+                        decrypted.resize(out_len);
+
+                        // Remove trailing null bytes and parse JSON
+                        std::string json_str(decrypted.begin(), decrypted.end());
+                        // Strip trailing nulls
+                        while (!json_str.empty() && json_str.back() == '\0') json_str.pop_back();
+
+                        auto conf_root = obn::json::parse(json_str);
+                        if (conf_root) {
+                            std::string token = conf_root->find("user").find("token").as_string();
+                            std::string uid    = conf_root->find("user").find("user_id").as_string();
+                            if (!token.empty() && !uid.empty()) {
+                                sess.access_token = token;
+                                sess.user_id      = uid;
+                                LOG("loaded session from BambuNetworkEngine.conf (user_id=%s)", uid.c_str());
+                            }
+                        }
+                    }
+                } else {
+                    ERR("cannot decrypt BambuNetworkEngine.conf: network_engine.key is missing or invalid");
+                }
+            }
+        }
+
         if (sess.access_token.empty() || sess.user_id.empty()) {
             ERR("no cloud session: supply --access-token/--user-id (and --region), "
                 "or place a logged-in obn.auth.json in %s", config_dir.c_str());
@@ -472,14 +611,13 @@ int main(int argc, char** argv) {
 
         auto headers = obn::bbl::identity_headers(sess.access_token, sess.user_id,
                                                   /*include_client_id=*/false,
-                                                  /*with_content_type=*/true);
-        const std::string& cert_id = obn::signing::app_certification_id();
-        if (!cert_id.empty()) headers["x-bbl-app-certification-id"] = cert_id;
-        std::string dss = obn::signing::device_security_sign();
-        if (!dss.empty()) headers["x-bbl-device-security-sign"] = dss;
-        else ERR("WARNING: device_security_sign() is empty — no slicer key loaded; "
-                 "the mint will likely 403. Expected key at %s/slicer_key.pem",
-                 config_dir.c_str());
+                                                  /*with_content_type=*/true,
+                                                  /*with_signing_headers=*/true);
+        if (!headers.count("x-bbl-device-security-sign")) {
+            ERR("WARNING: device_security_sign() is empty — no slicer key loaded; "
+                "the mint will likely 403. Expected key at %s/slicer_key.pem",
+                config_dir.c_str());
+        }
 
         std::string url  = obn::cloud::api_host(sess.region) + "/v1/iot-service/api/user/ttcode";
         std::string body = "{\"dev_id\":\"" + dev_id + "\"}";

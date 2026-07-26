@@ -232,11 +232,13 @@ std::string to_bool(bool v) { return v ? "true" : "false"; }
 // POST /my/task and POST /project require X-BBL-Client-ID; GET stages erase
 // Content-Type at the call site.
 std::map<std::string, std::string> bbl_headers(const std::string& access_token,
-                                               const std::string& user_id)
+                                               const std::string& user_id,
+                                               bool with_signing_headers = false)
 {
     return obn::bbl::identity_headers(access_token, user_id,
                                       /*include_client_id*/true,
-                                      /*with_content_type*/true);
+                                      /*with_content_type*/true,
+                                      with_signing_headers);
 }
 
 bool status_ok(long code) { return code >= 200 && code < 300; }
@@ -591,26 +593,11 @@ int create_task(const std::string& api, const std::string& token,
     obn::http::Request req;
     req.method  = obn::http::Method::POST;
     req.url     = api + "/v1/user-service/my/task";
-    auto hdrs = bbl_headers(token, user_id);
+    auto hdrs = bbl_headers(token, user_id, /*with_signing_headers=*/true);
     OBN_DEBUG("cloud_print: create_task hdr X-BBL-Client-Name=%s X-BBL-OS-Type=%s "
               "(config client_name=%s) uid=%s",
               hdrs["X-BBL-Client-Name"].c_str(), hdrs["X-BBL-OS-Type"].c_str(),
               obn::config::current().client_name.c_str(), user_id.c_str());
-    // Signing headers are best-effort: when no slicer key/cert is configured
-    // these come back empty, and we omit them rather than send blanks. The
-    // cloud verifies x-bbl-device-security-sign by recovering a recent
-    // timestamp from the signature (current time in ms, raw PKCS#1 v1.5, not
-    // the body); it is only enforced on signed writes.
-    // The HTTP header uses `issuer:serial.lower()`, a DIFFERENT serialization
-    // from the MQTT envelope cert_id (`serial+issuer`). Sending the MQTT form
-    // here gets the write rejected with 403.
-    const std::string cert_id  = obn::signing::app_certification_id();
-    const std::string sec_sign = obn::signing::device_security_sign();
-    OBN_DEBUG("cloud_print: create_task sign hdrs cert_id='%s' (len=%zu) "
-              "sec_sign_len=%zu",
-              cert_id.c_str(), cert_id.size(), sec_sign.size());
-    if (!cert_id.empty())  hdrs["x-bbl-app-certification-id"] = cert_id;
-    if (!sec_sign.empty()) hdrs["x-bbl-device-security-sign"] = sec_sign;
     req.headers   = std::move(hdrs);
     req.body      = body;
     req.timeout_s = 60;

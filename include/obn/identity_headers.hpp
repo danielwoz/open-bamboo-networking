@@ -15,8 +15,9 @@
 // agent uses. Real slicer/plugin versions come from slicer_plugin_versions.hpp.
 // Values are env-overridable so a capture can be reproduced exactly.
 
-#include "obn/slicer_plugin_versions.hpp"
 #include "obn/config.hpp"
+#include "obn/signing.hpp"
+#include "obn/slicer_plugin_versions.hpp"
 
 #include <openssl/evp.h>
 
@@ -222,7 +223,8 @@ inline std::string machine_uuid() {
 
 inline std::map<std::string, std::string>
 identity_headers(const std::string& access_token, const std::string& user_id,
-                 bool include_client_id, bool with_content_type)
+                 bool include_client_id = false, bool with_content_type = true,
+                 bool with_signing_headers = false)
 {
     auto env_or = [](const char* k, const std::string& d) {
         const char* v = std::getenv(k);
@@ -279,12 +281,23 @@ identity_headers(const std::string& access_token, const std::string& user_id,
     h["X-BBL-OS-Type"]        = os_type;
     h["X-BBL-OS-Version"]     = os_ver;
     h["X-BBL-Agent-Version"]  = agent_ver;
-    h["X-BBL-Executable-info"] = env_or("BBL_EXEC_INFO", "{}");
+    std::string default_exec_info = "{}";
+    if (os_type == "win" || os_type == "windows") {
+        default_exec_info = "{\"name\":\"" + client_name + "\",\"version\":\"" + client_ver + "\",\"os\":\"windows\"}";
+    }
+    h["X-BBL-Executable-info"] = env_or("BBL_EXEC_INFO", default_exec_info);
     h["X-BBL-Agent-OS-Type"]  = os_type;
     h["X-BBL-Executable-Env"] = "false";
     h["accept"]               = "application/json";
     if (!access_token.empty()) h["Authorization"] = "Bearer " + access_token;
     if (with_content_type) h["Content-Type"] = "application/json";
+
+    if (with_signing_headers) {
+        const std::string cert_id  = obn::signing::app_certification_id();
+        const std::string sec_sign = obn::signing::device_security_sign();
+        if (!cert_id.empty())  h["x-bbl-app-certification-id"] = cert_id;
+        if (!sec_sign.empty()) h["x-bbl-device-security-sign"] = sec_sign;
+    }
     return h;
 }
 
