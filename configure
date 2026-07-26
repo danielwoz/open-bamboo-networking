@@ -255,32 +255,9 @@ if [ -z "$OBN_VERSION" ]; then
             "$conf" | head -n1)
     fi
 
-    if [ -z "$detected" ] && [ "$CLIENT_TYPE" = "orca_slicer" ]; then
-        # Orca writes network_plugin_version only after it has installed a
-        # plugin at least once. A clean Orca install has no key at all, so
-        # fall back to the latest version Orca knows about. See
-        # AVAILABLE_NETWORK_VERSIONS in
-        # 3rd_party/OrcaSlicer/src/slic3r/Utils/bambu_networking.hpp.
-        detected="02.03.00"
-        echo "configure: no $json_key in $conf -- defaulting to $detected"
-    fi
-
     if [ -z "$detected" ]; then
-        cat >&2 <<EOF
-configure: cannot determine the plugin version automatically.
-
-  Tried to read "$json_key" from: $conf
-  $( [ -r "$conf" ] || echo "(file does not exist or is not readable)" )
-
-  Launch the slicer at least once so it writes its config, or pass the
-  version explicitly, for example:
-
-      ./configure --with-version=02.05.02.99
-
-  The slicer compares only the first 8 characters ("MAJOR.MINOR.PATCH"),
-  so use X.Y.Z from the slicer you are installing next to and put .99 last.
-EOF
-        exit 1
+        detected="02.07.00.55"
+        echo "configure: no $json_key in $conf -- defaulting to $detected"
     fi
 
     # CMake's OBN_VERSION regex requires exactly four dotted components.

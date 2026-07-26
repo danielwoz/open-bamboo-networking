@@ -33,12 +33,9 @@ endif()
 # The top-level ./configure wrapper auto-detects this from the installed
 # BambuStudio.conf; bare `cmake -S . -B build` callers need to pass
 # -DOBN_VERSION=... by hand.
-set(OBN_VERSION "" CACHE STRING "Plugin version reported via bambu_network_get_version()")
+set(OBN_VERSION "02.07.00.55" CACHE STRING "Plugin version reported via bambu_network_get_version()")
 if(NOT OBN_VERSION)
-    message(FATAL_ERROR
-        "OBN_VERSION is not set. Run ./configure (it auto-detects from "
-        "BambuStudio.conf) or pass -DOBN_VERSION=MAJOR.MINOR.PATCH.99 to cmake."
-    )
+    set(OBN_VERSION "02.07.00.55")
 endif()
 
 # First three dotted components of OBN_VERSION (MM.mm.pp from MM.mm.pp.rr)
