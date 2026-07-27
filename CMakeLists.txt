@@ -890,8 +890,10 @@ if(NOT WIN32)
 endif()
 
 # liveview_capture streams a printer's liveview camera (TUTK/Agora cloud relay
-# or LAN JPEG) to a playable .mp4 via a self-contained ISO-BMFF muxer. POSIX-only.
-if(NOT WIN32)
-    add_subdirectory(tools/liveview_capture)
-    add_subdirectory(tools/obn_fetch_device_cert)
-endif()
+# or LAN JPEG) to a playable .mp4 via a self-contained ISO-BMFF muxer.
+# obn_fetch_device_cert fetches and decrypts a device certificate from the cloud.
+# Both are portable (no POSIX-only headers; they already branch on _WIN32), so they
+# build everywhere -- they are the primary way to exercise the camera and cert paths
+# from a shell, which is as useful on Windows as it is on Linux.
+add_subdirectory(tools/liveview_capture)
+add_subdirectory(tools/obn_fetch_device_cert)

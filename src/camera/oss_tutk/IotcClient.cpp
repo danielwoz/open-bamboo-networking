@@ -53,6 +53,8 @@
 #  include <ifaddrs.h>          // getifaddrs — enumerate interface subnet broadcasts
 #  include <net/if.h>           // IFF_BROADCAST / IFF_LOOPBACK
 #  include <netpacket/packet.h> // sockaddr_ll — read interface MAC
+#else
+#  include <iphlpapi.h>         // GetAdaptersAddresses — the getifaddrs equivalent
 #endif
 
 #include "IotcProtocol.hpp"
@@ -875,8 +877,13 @@ static int iotc_bio_write(BIO* b, const char* data, int len)
     // by gdb on libBambuSource TransCodePartial (rcx=64 for every DTLS send).
     trans_code_partial(pkt.data(), std::min(total, (size_t)64));
 
-    ssize_t n = sendto(c->sock, reinterpret_cast<const char*>(pkt.data()),
-                       total, 0, (const struct sockaddr*)&c->peer, sizeof(c->peer));
+    // Pass the uint8_t* through unchanged: on Windows the local sendto()/
+    // recvfrom() compat wrappers take void*, while Winsock's globals take char*.
+    // A reinterpret_cast to char* here would make both equally good candidates
+    // (ADL finds ::sendto via the sockaddr* argument) and the call ambiguous.
+    ssize_t n = sendto(c->sock, pkt.data(),
+                       total, 0, (const struct sockaddr*)&c->peer,
+                       (int)sizeof(c->peer));
     if (n < 0) { BIO_set_retry_write(b); return -1; }
     return len;
 }
@@ -890,7 +897,7 @@ static int iotc_bio_read(BIO* b, char* out, int outlen)
     uint8_t raw[65536];
     struct sockaddr_in src{};
     socklen_t sl = sizeof(src);
-    ssize_t n = recvfrom(c->sock, reinterpret_cast<char*>(raw), sizeof(raw), 0,
+    ssize_t n = recvfrom(c->sock, raw, sizeof(raw), 0,
                          (struct sockaddr*)&src, &sl);
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK
@@ -2578,6 +2585,7 @@ OssSession* iotc_connect(const std::string& uid,
         // search) without arming the session. Enumerate interface broadcast
         // addresses and fall back to INADDR_BROADCAST only if none are found.
         std::vector<uint32_t> bcast_addrs;
+#ifndef _WIN32
         struct ifaddrs* ifap = nullptr;
         if (getifaddrs(&ifap) == 0) {
             for (struct ifaddrs* ia = ifap; ia; ia = ia->ifa_next) {
@@ -2590,6 +2598,44 @@ OssSession* iotc_connect(const std::string& uid,
             }
             freeifaddrs(ifap);
         }
+#else
+        // Windows has no getifaddrs; GetAdaptersAddresses reports the prefix
+        // length per unicast address, so derive each directed broadcast as
+        // addr | ~mask. Same result as ifa_broadaddr on POSIX.
+        {
+            ULONG sz = 16 * 1024;
+            std::vector<uint8_t> buf(sz);
+            ULONG rc = ERROR_BUFFER_OVERFLOW;
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                rc = GetAdaptersAddresses(AF_INET,
+                                          GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
+                                          GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_SKIP_FRIENDLY_NAME,
+                                          nullptr,
+                                          reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data()),
+                                          &sz);
+                if (rc != ERROR_BUFFER_OVERFLOW) break;
+                buf.resize(sz);
+            }
+            if (rc == NO_ERROR) {
+                for (auto* aa = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
+                     aa; aa = aa->Next) {
+                    if (aa->OperStatus != IfOperStatusUp) continue;
+                    if (aa->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+                    for (auto* ua = aa->FirstUnicastAddress; ua; ua = ua->Next) {
+                        if (!ua->Address.lpSockaddr) continue;
+                        if (ua->Address.lpSockaddr->sa_family != AF_INET) continue;
+                        const uint8_t plen = ua->OnLinkPrefixLength;
+                        if (plen == 0 || plen > 32) continue;
+                        const uint32_t addr_h = ntohl(reinterpret_cast<sockaddr_in*>(
+                            ua->Address.lpSockaddr)->sin_addr.s_addr);
+                        const uint32_t mask_h = (plen == 32)
+                            ? 0xFFFFFFFFu : ~((1u << (32 - plen)) - 1u);
+                        bcast_addrs.push_back(htonl(addr_h | ~mask_h));
+                    }
+                }
+            }
+        }
+#endif
         if (bcast_addrs.empty()) bcast_addrs.push_back(INADDR_BROADCAST);
 
         const char* lan_ip_env = getenv("OBN_TUTK_LAN_IP");

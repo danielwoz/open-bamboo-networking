@@ -607,7 +607,13 @@ int main(int argc, char** argv) {
         // client identity; a non-"BambuStudio" X-BBL-Client-Name is rejected
         // with HTTP 403 (same requirement as cloud /my/task). Present the stock
         // name for the mint unless the caller already pinned one via env.
-        if (!std::getenv("BBL_CLIENT_NAME")) setenv("BBL_CLIENT_NAME", "BambuStudio", 1);
+        if (!std::getenv("BBL_CLIENT_NAME")) {
+#ifdef _WIN32
+            _putenv_s("BBL_CLIENT_NAME", "BambuStudio");   // no setenv on Windows
+#else
+            setenv("BBL_CLIENT_NAME", "BambuStudio", 1);
+#endif
+        }
 
         auto headers = obn::bbl::identity_headers(sess.access_token, sess.user_id,
                                                   /*include_client_id=*/false,
