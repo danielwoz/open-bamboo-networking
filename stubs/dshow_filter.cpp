@@ -56,6 +56,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -477,6 +478,26 @@ bool make_h264_media_type(AM_MEDIA_TYPE* mt)
 static std::atomic<int> g_probed_w{0};
 static std::atomic<int> g_probed_h{0};
 
+// Last successful probe per host, so a later flaky probe reuses a known-good
+// size instead of a default that renders black on 1080p cameras.
+static std::mutex g_probe_cache_mu;
+static std::map<std::string, std::pair<int,int>> g_probe_cache;
+
+static void remember_probed_size(const std::string& host, int w, int h)
+{
+    std::lock_guard<std::mutex> lk(g_probe_cache_mu);
+    g_probe_cache[host] = {w, h};
+}
+
+static bool recall_probed_size(const std::string& host, int& w, int& h)
+{
+    std::lock_guard<std::mutex> lk(g_probe_cache_mu);
+    auto it = g_probe_cache.find(host);
+    if (it == g_probe_cache.end()) return false;
+    w = it->second.first; h = it->second.second;
+    return true;
+}
+
 // Pixel width/height from a JPEG's SOF0..3 marker.
 static bool parse_jpeg_dimensions(const std::uint8_t* d, std::size_t n, int& w, int& h)
 {
@@ -503,7 +524,10 @@ static bool probe_mjpeg_dimensions(const ParsedUrl& url, int& w, int& h)
 {
     obn::os::socket_t fd = obn::os::kInvalidSocket;
     SSL* ssl = nullptr;
-    if (obn::tls::dial_tls(url.host, url.port, /*timeout_ms=*/5000, &fd, &ssl) != 0)
+    // The printer's :6000 TLS handshake has been measured at ~5s on a busy A1,
+    // so a 5s budget makes the probe flaky -- and a failed probe silently
+    // declares the wrong size, which renders black. Be generous.
+    if (obn::tls::dial_tls(url.host, url.port, /*timeout_ms=*/15000, &fd, &ssl) != 0)
         return false;
     std::uint8_t auth[80] = {0};
     auth[0] = 0x40;                 // payload size
@@ -1382,14 +1406,32 @@ HRESULT STDMETHODCALLTYPE BambuSourceFilter::Load(LPCOLESTR lpwszFileName,
         pu.user.c_str(), pu.path.c_str());
     if (pu.scheme == UrlScheme::Local) {
         int pw = 0, ph = 0;
-        if (probe_mjpeg_dimensions(pu, pw, ph)) {
+        bool ok = false;
+        // Retry: a single dropped probe would declare the wrong size for the
+        // whole session, and the decompressor renders black rather than
+        // renegotiating.
+        for (int attempt = 0; attempt < 3 && !ok; ++attempt) {
+            ok = probe_mjpeg_dimensions(pu, pw, ph);
+            if (!ok && attempt + 1 < 3)
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        }
+        if (ok) {
             g_probed_w.store(pw, std::memory_order_relaxed);
             g_probed_h.store(ph, std::memory_order_relaxed);
+            remember_probed_size(pu.host, pw, ph);
             log_at(LL_INFO, kNoLogger, nullptr,
                    "dshow: probed stream resolution %dx%d", pw, ph);
+        } else if (recall_probed_size(pu.host, pw, ph)) {
+            // Reuse this host's last known good size rather than falling back
+            // to a default that is wrong for 1080p cameras.
+            g_probed_w.store(pw, std::memory_order_relaxed);
+            g_probed_h.store(ph, std::memory_order_relaxed);
+            log_at(LL_WARN, kNoLogger, nullptr,
+                   "dshow: probe failed; reusing cached %dx%d for %s",
+                   pw, ph, pu.host.c_str());
         } else {
             log_at(LL_WARN, kNoLogger, nullptr,
-                   "dshow: resolution probe failed; using default");
+                   "dshow: resolution probe failed and no cached size for %s; using default", pu.host.c_str());
         }
     }
     std::lock_guard<std::mutex> lk(mu_);
