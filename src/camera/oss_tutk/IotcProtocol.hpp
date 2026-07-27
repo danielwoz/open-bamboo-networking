@@ -498,14 +498,19 @@ struct RelayConn {
 // Relay API — implemented in IotcClient.cpp
 // --------------------------------------------------------------------------
 
-// JOIN + KNOCK×5 + verify relay assignment + post-KNOCK.
+// JOIN to the master, then rendezvous with the printer and adopt its P2P media
+// address. If the printer's direct rendezvous does not arrive (it is off-LAN /
+// behind NAT), fall back to the reflexive + candidate exchange via the rendezvous
+// servers, using authkey to punch through.
 // uid_upper: 20-char UPPERCASE printer UID (e.g. "7PYKKRDZVKWBBU1D111A")
 // relay_id:  first 16 chars of the 20-char relay subdomain
 // region_str: "cn", "eu", "us" etc.
+// authkey:   8-char auth key from the tutk URL (may be empty for the LAN path).
 // out: filled on success.
 // Returns 0 on success, -1 on failure.
 int iotc_relay_connect(const char* uid_upper, const char* relay_id,
-                       const char* region_str, RelayConn* out);
+                       const char* region_str, const char* authkey,
+                       RelayConn* out);
 
 // Run DTLS-PSK handshake over the relay socket.
 // Must be called after iotc_relay_connect().

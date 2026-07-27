@@ -28,6 +28,7 @@ struct AgoraJoinParams {
     std::string stream_key; // AES-128 key material (from joinChannel args)
     std::string tutk_uid;   // TUTK device UID (printer serial number, uppercase)
     std::string av_passwd;  // AV-layer LOGIN password = printer access code (same value as dtls_passwd)
+    std::string authkey;    // 8-char auth key from the tutk URL; used by the off-LAN rendezvous
 };
 
 using FrameCallback = std::function<void(const uint8_t* data, int len,

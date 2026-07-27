@@ -41,6 +41,7 @@ bool OssTutkCameraSource::parse_url_()
     tutk_uid_ = tutk_url_param(query, "uid");
     // DTLS/AV password is carried in the "passwd" parameter.
     passwd_   = tutk_url_param(query, "passwd");
+    authkey_  = tutk_url_param(query, "authkey");
     channel_  = tutk_url_param(query, "channel");
 
     std::string region_str = tutk_url_param(query, "region");
@@ -87,6 +88,7 @@ bool OssTutkCameraSource::open()
     p.channel     = channel_;
     p.dtls_passwd = passwd_;
     p.av_passwd   = passwd_;
+    p.authkey     = authkey_;
     p.area_code   = area_code_;
     // app_id, token, uid are unused in the direct TUTK relay path
 

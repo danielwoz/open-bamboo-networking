@@ -2144,11 +2144,225 @@ static int send_relay_knock(obn::net::socket_t sock, const struct sockaddr_in* d
     return (n == (ssize_t)sizeof(pkt)) ? 0 : -1;
 }
 
+// ==========================================================================
+// Off-LAN reflexive + candidate rendezvous.
+//
+// When the printer is behind NAT it does not send its rendezvous directly.
+// The client completes a rendezvous with the servers the master lists in its
+// reply (the :3478 endpoints): it presents the auth key, learns the printer's
+// candidate addresses, and asks the servers to coordinate a punch. The printer
+// then sends its 02 06 12 rendezvous from its media address, which the caller
+// adopts as the peer. All packets use the same TransCodePartial obfuscation.
+// ==========================================================================
+
+// Shared 16-byte IOTC control header (channel 0x1c, flags 0x02).
+static void write_rdv_hdr(uint8_t* p, uint32_t body_len,
+                          uint8_t t0, uint8_t t1, uint8_t t2)
+{
+    memset(p, 0, 16);
+    p[0] = 0x04; p[1] = 0x02; p[2] = 0x1c; p[3] = 0x02;
+    uint32_t bl = htole32(body_len);
+    memcpy(p + 4, &bl, 4);
+    p[8] = t0; p[9] = t1; p[10] = t2;
+}
+
+// 8-byte address record: 02 00 | port (big-endian) | ipv4 (network order).
+static void write_addr_rec(uint8_t* p, const struct sockaddr_in* a)
+{
+    p[0] = 0x02; p[1] = 0x00;
+    memcpy(p + 2, &a->sin_port, 2);   // network order == big-endian on the wire
+    memcpy(p + 4, &a->sin_addr, 4);
+}
+static bool read_addr_rec(const uint8_t* p, struct sockaddr_in* a)
+{
+    if (p[0] != 0x02 || p[1] != 0x00) return false;
+    memset(a, 0, sizeof(*a));
+    a->sin_family = AF_INET;
+    memcpy(&a->sin_port, p + 2, 2);
+    memcpy(&a->sin_addr, p + 4, 4);
+    return a->sin_addr.s_addr != 0 && a->sin_port != 0;
+}
+
+// Rendezvous-server (:3478) addresses from the master's 08 10 83 reply.
+static int parse_rdv_servers(const uint8_t* reply, size_t len,
+                             struct sockaddr_in* out, int max_out)
+{
+    int n = 0;
+    for (size_t i = 16; i + 8 <= len && n < max_out; ++i) {
+        struct sockaddr_in a;
+        if (read_addr_rec(reply + i, &a) && ntohs(a.sin_port) == 3478) {
+            bool dup = false;
+            for (int k = 0; k < n; ++k)
+                if (out[k].sin_addr.s_addr == a.sin_addr.s_addr) { dup = true; break; }
+            if (!dup) out[n++] = a;
+        }
+    }
+    return n;
+}
+
+// Client's own reflexive address from the master reply: the first address
+// record that is not one of the :3478 rendezvous servers.
+static bool parse_reflexive(const uint8_t* reply, size_t len, struct sockaddr_in* out)
+{
+    for (size_t i = 16; i + 8 <= len; ++i) {
+        struct sockaddr_in a;
+        if (read_addr_rec(reply + i, &a) && ntohs(a.sin_port) != 3478) { *out = a; return true; }
+    }
+    return false;
+}
+
+// Printer candidate addresses from a 01 03 43 reply: records at [20], [36], ...
+// Candidate records use family byte 0x02 (public) or 0x00 (LAN) at [+0]; the
+// nonzero port+ip guard keeps runs of zero padding from parsing as addresses.
+static int parse_candidates(const uint8_t* reply, size_t len,
+                            struct sockaddr_in* out, int max_out)
+{
+    int n = 0;
+    for (size_t i = 20; i + 8 <= len && n < max_out; i += 16) {
+        const uint8_t* p = reply + i;
+        if (p[1] != 0x00 || (p[0] != 0x00 && p[0] != 0x02)) continue;
+        struct sockaddr_in a; memset(&a, 0, sizeof(a));
+        a.sin_family = AF_INET;
+        memcpy(&a.sin_port, p + 2, 2);
+        memcpy(&a.sin_addr, p + 4, 4);
+        if (a.sin_addr.s_addr != 0 && a.sin_port != 0) out[n++] = a;
+    }
+    return n;
+}
+
+// 14 02 24: UID + auth key (8 ASCII bytes from the URL, null-padded at [40..48)).
+static int send_rdv_authkey(obn::net::socket_t sock, const struct sockaddr_in* dst,
+                            const char* uid_upper, const char* authkey)
+{
+    uint8_t pkt[48];
+    write_rdv_hdr(pkt, 32, 0x14, 0x02, 0x24);
+    memset(pkt + 16, 0, 32);
+    memcpy(pkt + 16, uid_upper, 20);
+    memcpy(pkt + 40, authkey, strnlen(authkey, 8));
+    trans_code_partial(pkt, sizeof(pkt));
+    ssize_t n = sendto(sock, pkt, sizeof(pkt), 0, (const struct sockaddr*)dst, sizeof(*dst));
+    return (n == (ssize_t)sizeof(pkt)) ? 0 : -1;
+}
+
+// 0a 02 24: UID + session token [36..44) + auth key [56..64) (pre-check).
+static int send_rdv_token(obn::net::socket_t sock, const struct sockaddr_in* dst,
+                          const char* uid_upper, const uint8_t token[8],
+                          const char* authkey)
+{
+    uint8_t pkt[64];
+    write_rdv_hdr(pkt, 48, 0x0a, 0x02, 0x24);
+    memset(pkt + 16, 0, 48);
+    memcpy(pkt + 16, uid_upper, 20);
+    memcpy(pkt + 36, token, 8);
+    pkt[44] = 0x3c;                    // observed constant
+    memcpy(pkt + 56, authkey, strnlen(authkey, 8));
+    trans_code_partial(pkt, sizeof(pkt));
+    ssize_t n = sendto(sock, pkt, sizeof(pkt), 0, (const struct sockaddr*)dst, sizeof(*dst));
+    return (n == (ssize_t)sizeof(pkt)) ? 0 : -1;
+}
+
+// 04 08 24: punch. Carries a printer candidate address [36..44) (00 00 | port |
+// ip variant), the session token [68..76), the client random [76..84) and the
+// client's reflexive address [140..148).
+static int send_rdv_punch(obn::net::socket_t sock, const struct sockaddr_in* server,
+                          const char* uid_upper, const struct sockaddr_in* cand,
+                          const uint8_t token[8], const uint8_t client_random[8],
+                          const struct sockaddr_in* reflexive)
+{
+    uint8_t pkt[544];
+    write_rdv_hdr(pkt, 528, 0x04, 0x08, 0x24);
+    memset(pkt + 16, 0, 528);
+    memcpy(pkt + 16, uid_upper, 20);
+    pkt[36] = 0x00; pkt[37] = 0x00;
+    memcpy(pkt + 38, &cand->sin_port, 2);
+    memcpy(pkt + 40, &cand->sin_addr, 4);
+    static const uint8_t kPunchConst[16] = {
+        0x02, 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0x03, 0x03, 0x04, 0x04, 0x03, 0x03, 0x04
+    };
+    memcpy(pkt + 52, kPunchConst, 16);
+    memcpy(pkt + 68, token, 8);
+    memcpy(pkt + 76, client_random, 8);
+    write_addr_rec(pkt + 140, reflexive);
+    trans_code_partial(pkt, sizeof(pkt));
+    ssize_t n = sendto(sock, pkt, sizeof(pkt), 0, (const struct sockaddr*)server, sizeof(*server));
+    return (n == (ssize_t)sizeof(pkt)) ? 0 : -1;
+}
+
+// Returns true if a printer rendezvous (02 06 12) arrives; peer_out is set to
+// the address it came from (the printer's P2P media address).
+static bool offlan_rendezvous(obn::net::socket_t sock,
+                              const uint8_t* master_reply, size_t reply_len,
+                              const char* uid_upper, const char* authkey,
+                              const uint8_t session_token[8],
+                              struct sockaddr_in* peer_out)
+{
+    if (!authkey || !authkey[0]) return false;
+
+    struct sockaddr_in servers[4];
+    int ns = parse_rdv_servers(master_reply, reply_len, servers, 4);
+    if (ns == 0) return false;
+
+    struct sockaddr_in reflexive{};
+    bool have_reflexive = parse_reflexive(master_reply, reply_len, &reflexive);
+
+    uint8_t client_random[8];
+    { uint32_t a = rand32(), b = rand32();
+      memcpy(client_random, &a, 4); memcpy(client_random + 4, &b, 4); }
+
+    for (int s = 0; s < ns; ++s) {
+        struct sockaddr_in* srv = &servers[s];
+
+        send_rdv_authkey(sock, srv, uid_upper, authkey);
+        send_rdv_token(sock, srv, uid_upper, session_token, authkey);
+
+        set_recv_timeout(sock, 1500);
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            uint8_t resp[1024];
+            struct sockaddr_in src{}; socklen_t sl = sizeof(src);
+            ssize_t n = recvfrom(sock, resp, sizeof(resp), 0, (struct sockaddr*)&src, &sl);
+            if (n < 16) continue;
+            reverse_trans_code_partial(resp, (size_t)n);
+            if (resp[0] != 0x04 || resp[1] != 0x02) continue;
+
+            if (resp[8] == 0x02 && resp[9] == 0x06 && resp[10] == 0x12) {
+                *peer_out = src;
+                return true;
+            }
+            if (resp[8] == 0x01 && resp[9] == 0x03 && resp[10] == 0x43) {
+                struct sockaddr_in cands[4];
+                int nc = parse_candidates(resp, (size_t)n, cands, 4);
+                for (int c = 0; c < nc; ++c)
+                    send_rdv_punch(sock, srv, uid_upper, &cands[c],
+                                   session_token, client_random,
+                                   have_reflexive ? &reflexive : &cands[c]);
+            }
+        }
+
+        set_recv_timeout(sock, 2000);
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            uint8_t resp[1024];
+            struct sockaddr_in src{}; socklen_t sl = sizeof(src);
+            ssize_t n = recvfrom(sock, resp, sizeof(resp), 0, (struct sockaddr*)&src, &sl);
+            if (n < 16) continue;
+            reverse_trans_code_partial(resp, (size_t)n);
+            if (resp[0] == 0x04 && resp[1] == 0x02 &&
+                resp[8] == 0x02 && resp[9] == 0x06 && resp[10] == 0x12) {
+                *peer_out = src;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // JOIN + KNOCK×5 + receive 200B relay assignment + post-KNOCK.
 int iotc_relay_connect(const char* uid_upper, const char* relay_id,
-                       const char* region_str, RelayConn* out)
+                       const char* region_str, const char* authkey,
+                       RelayConn* out)
 {
     if (!uid_upper || !relay_id || !region_str || !out) return -1;
+    if (!authkey) authkey = "";
     memset(out, 0, sizeof(*out));
     out->sock = -1;
 
@@ -2211,6 +2425,8 @@ int iotc_relay_connect(const char* uid_upper, const char* relay_id,
     // address, not by the master server. That source address is the peer we must
     // punch and run DTLS/media against; the master only brokers the rendezvous.
     struct sockaddr_in peer_addr{};
+    uint8_t master_reply[256];
+    size_t  master_reply_len = 0;
     for (int attempt = 0; attempt < 3; ++attempt) {
         uint8_t resp[256];
         struct sockaddr_in src{};
@@ -2222,13 +2438,9 @@ int iotc_relay_connect(const char* uid_upper, const char* relay_id,
             continue;
         }
 
-        OBN_DEBUG("[relay] received %zd bytes from relay server", n);
+        OBN_DEBUG("[relay] received %zd bytes", n);
 
-        if (n < 192) {
-            OBN_WARN("[relay] response too short (%zd, expected >=192)", n);
-            continue;
-        }
-
+        if (n < 16) continue;
         reverse_trans_code_partial(resp, (size_t)n);
 
         if (resp[0] != 0x04 || resp[1] != 0x02) {
@@ -2236,7 +2448,15 @@ int iotc_relay_connect(const char* uid_upper, const char* relay_id,
             continue;
         }
 
-        if (resp[8] != 0x02 || resp[9] != 0x06 || resp[10] != 0x12) {  // relay assignment type
+        // The master's 08 10 83 reply lists the rendezvous servers and our own
+        // reflexive address; keep it for the off-LAN fallback below.
+        if (resp[8] == 0x08 && resp[9] == 0x10 && resp[10] == 0x83) {
+            master_reply_len = (size_t)n < sizeof(master_reply) ? (size_t)n : sizeof(master_reply);
+            memcpy(master_reply, resp, master_reply_len);
+            continue;
+        }
+
+        if (resp[8] != 0x02 || resp[9] != 0x06 || resp[10] != 0x12) {  // printer rendezvous
             OBN_WARN("[relay] unexpected msg type %02x%02x%02x (expected 02 06 12)", resp[8], resp[9], resp[10]);
             continue;
         }
@@ -2265,8 +2485,23 @@ int iotc_relay_connect(const char* uid_upper, const char* relay_id,
         break;
     }
 
+    // Off-LAN fallback: the printer did not send a direct rendezvous, so run the
+    // reflexive/candidate exchange with the servers the master listed. On success
+    // peer_addr is the printer's P2P media address.
+    if (!got_assignment && master_reply_len > 0) {
+        OBN_DEBUG("[relay] no direct rendezvous; trying off-LAN candidate exchange");
+        if (offlan_rendezvous(sock, master_reply, master_reply_len,
+                              uid_upper, authkey, session_token, &peer_addr)) {
+            got_assignment = true;
+            char pip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &peer_addr.sin_addr, pip, sizeof(pip));
+            OBN_DEBUG("[relay] off-LAN rendezvous succeeded; peer = %s:%u",
+                      pip, ntohs(peer_addr.sin_port));
+        }
+    }
+
     if (!got_assignment) {
-        OBN_WARN("[relay] no relay assignment received after 3 attempts");
+        OBN_WARN("[relay] no rendezvous received");
         obn::net::close_socket(sock);
         return -1;
     }

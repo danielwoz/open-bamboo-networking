@@ -141,7 +141,8 @@ int OssAgoraSignaling::Impl::do_join(const AgoraJoinParams& params)
         rstr, channel.c_str(), uid_upper.c_str());
     // PSK = SHA256(dtls_passwd); identity = "AUTHPWD_admin" — same derivation as LAN DTLS.
     OBN_INFO("[oss-relay] starting relay connect...");
-    if (iotc_relay_connect(uid_upper.c_str(), channel.c_str(), rstr, &relay) != 0) {
+    if (iotc_relay_connect(uid_upper.c_str(), channel.c_str(), rstr,
+                           params.authkey.c_str(), &relay) != 0) {
         OBN_ERROR("[oss-relay] iotc_relay_connect failed");
         return -1;
     }

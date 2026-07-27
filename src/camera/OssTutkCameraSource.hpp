@@ -46,6 +46,7 @@ private:
     std::string  tutk_uid_;   // 20-char uppercase UID
     std::string  channel_;    // relay subdomain (relay_id)
     std::string  passwd_;     // dtls_passwd + av_passwd
+    std::string  authkey_;    // 8-char auth key (off-LAN rendezvous)
     uint32_t     area_code_ = 0xFFFFFFFF;
 
     bambu_net::camera::oss_agora::OssAgoraSignaling signaling_;
