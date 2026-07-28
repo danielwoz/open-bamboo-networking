@@ -281,10 +281,7 @@ identity_headers(const std::string& access_token, const std::string& user_id,
     h["X-BBL-OS-Type"]        = os_type;
     h["X-BBL-OS-Version"]     = os_ver;
     h["X-BBL-Agent-Version"]  = agent_ver;
-    std::string default_exec_info = "{}";
-    if (os_type == "win" || os_type == "windows") {
-        default_exec_info = "{\"name\":\"" + client_name + "\",\"version\":\"" + client_ver + "\",\"os\":\"windows\"}";
-    }
+    std::string default_exec_info = "{\"name\":\"" + client_name + "\",\"version\":\"" + client_ver + "\",\"os\":\"" + (os_type == "win" || os_type == "windows" ? "windows" : os_type) + "\"}";
     h["X-BBL-Executable-info"] = env_or("BBL_EXEC_INFO", default_exec_info);
     h["X-BBL-Agent-OS-Type"]  = os_type;
     h["X-BBL-Executable-Env"] = "false";

@@ -1,3 +1,4 @@
+#include "obn/appcert_cipher.h"
 #include "obn/cloud_auth.hpp"
 #include "obn/identity_headers.hpp"
 
@@ -173,9 +174,9 @@ ProfileResult get_profile(const std::string& region,
     return r;
 }
 
-std::string decrypt_device_key(const std::string& base64_key, const std::string& aes256_key)
+std::string decrypt_device_key(const std::string& base64_key, const std::string& /*aes256_key*/)
 {
-    if (base64_key.empty() || aes256_key.empty()) return {};
+    if (base64_key.empty()) return {};
 
     // 1. Decode base64 encrypted payload
     std::vector<uint8_t> cipher(base64_key.size());
@@ -190,56 +191,25 @@ std::string decrypt_device_key(const std::string& base64_key, const std::string&
     EVP_ENCODE_CTX_free(b64_ctx);
     cipher.resize(out_len + final_len);
 
-    if (cipher.size() < 16) return {};
+    if (cipher.size() < 32) return {};
 
-    // 2. Prepare 32-byte AES key
-    std::vector<uint8_t> raw_key;
-    if (aes256_key.size() == 32) {
-        raw_key.assign(aes256_key.begin(), aes256_key.end());
-    } else {
-        raw_key.resize(aes256_key.size());
-        EVP_ENCODE_CTX* k_ctx = EVP_ENCODE_CTX_new();
-        if (k_ctx) {
-            EVP_DecodeInit(k_ctx);
-            int k_out = 0, k_fin = 0;
-            EVP_DecodeUpdate(k_ctx, raw_key.data(), &k_out,
-                             reinterpret_cast<const unsigned char*>(aes256_key.data()),
-                             static_cast<int>(aes256_key.size()));
-            EVP_DecodeFinal(k_ctx, raw_key.data() + k_out, &k_fin);
-            EVP_ENCODE_CTX_free(k_ctx);
-            raw_key.resize(k_out + k_fin);
-        }
-    }
-    if (raw_key.size() != 32) {
-        OBN_INFO("decrypt_device_key: key size %zu != 32 bytes", raw_key.size());
+    // 2. Framing: nonce (12 bytes), tag (16 bytes), ct_len (4 bytes LE)
+    const uint8_t* nonce = cipher.data();
+    uint32_t ctlen = cipher[28] | (cipher[29] << 8) | (cipher[30] << 16) | (static_cast<uint32_t>(cipher[31]) << 24);
+    if (32 + ctlen > cipher.size()) ctlen = static_cast<uint32_t>(cipher.size() - 32);
+
+    // 3. Custom AES-256 CTR mode with swapped SBOX (APPCERT_KEY = 00 01 02 ... 1F)
+    std::vector<uint8_t> pt(ctlen);
+    appcert::ctr_xor(appcert::APPCERT_KEY, nonce, cipher.data() + 32, ctlen, pt.data());
+
+    uint32_t magic = pt[0] | (pt[1] << 8) | (pt[2] << 16) | (static_cast<uint32_t>(pt[3]) << 24);
+    if (magic != 0x534b4559) { // "SKEY"
+        OBN_INFO("decrypt_device_key: SKEY magic mismatch (got 0x%08x)", magic);
         return {};
     }
 
-    // 3. AES-256-CBC Decrypt
-    std::vector<uint8_t> plain(cipher.size());
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) return {};
-
-    unsigned char iv[16] = {0};
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr, raw_key.data(), iv) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return {};
-    }
-
-    int p_out1 = 0, p_out2 = 0;
-    if (EVP_DecryptUpdate(ctx, plain.data(), &p_out1, cipher.data(), static_cast<int>(cipher.size())) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return {};
-    }
-
-    if (EVP_DecryptFinal_ex(ctx, plain.data() + p_out1, &p_out2) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        return {};
-    }
-    EVP_CIPHER_CTX_free(ctx);
-
-    plain.resize(p_out1 + p_out2);
-    return std::string(plain.begin(), plain.end());
+    // Extracted SKEY payload
+    return std::string(pt.begin(), pt.end());
 }
 
 DeviceCertResult fetch_device_cert(const std::string& region,
@@ -264,7 +234,8 @@ DeviceCertResult fetch_device_cert(const std::string& region,
         + "&ver=1";
     auto hdrs = obn::bbl::identity_headers(access_token, /*user_id*/std::string{},
                                            /*include_client_id*/false,
-                                           /*with_content_type*/false);
+                                           /*with_content_type*/false,
+                                           /*with_signing_headers*/true);
     auto resp = obn::http::get_json(url, hdrs);
     r.http_status = resp.status_code;
     r.raw_body    = resp.body;
