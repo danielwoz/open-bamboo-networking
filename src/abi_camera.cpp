@@ -16,8 +16,12 @@ OBN_ABI int bambu_network_get_camera_url(void* agent,
                                          std::string dev_id,
                                          std::function<void(std::string)> callback)
 {
-    if (agent) as_agent(agent)->maybe_setup_camera(dev_id);
+    auto* a = agent ? as_agent(agent) : nullptr;
+    if (a) a->maybe_setup_camera(dev_id);
     std::string url = obn::camera::get_url(dev_id);
+    // H.264 models (X1/H2/…) get an empty local URL; off-LAN, mint the remote
+    // TUTK URL (bambu:///tutk?...) so Studio's cloud camera branch can connect.
+    if (url.empty() && a) url = a->remote_camera_url(dev_id);
     if (callback) callback(url);
     return BAMBU_NETWORK_SUCCESS;
 }

@@ -18,6 +18,7 @@
 #include "obn/cover_cache.hpp"
 #include "obn/cover_server.hpp"
 #include "obn/json_lite.hpp"
+#include "obn/http_client.hpp"
 #include "obn/log.hpp"
 #include "obn/print_params_ftp_prefs.hpp"
 #include "obn/signing.hpp"
@@ -1172,10 +1173,10 @@ std::string Agent::camera_url_for(const std::string& dev_id)
             lv = it->second;
     }
     if (ip.empty() || code.empty()) {
-        OBN_INFO("camera_url: no LAN route for dev=%s (ip=%s code=%s)",
+        OBN_INFO("camera_url: no LAN route for dev=%s (ip=%s code=%s) — trying remote TUTK",
                  dev_id.c_str(), ip.empty() ? "unknown" : ip.c_str(),
                  code.empty() ? "unknown" : "known");
-        return {};
+        return remote_camera_url(dev_id);
     }
 
     // The :6000 tunnel (and a possible RTSPS liveview redirect) verify the
@@ -1187,6 +1188,120 @@ std::string Agent::camera_url_for(const std::string& dev_id)
                     + code;
     if (!lv.empty()) url += "&lv=" + lv;
     return url;
+}
+
+// Remote (cloud/off-LAN) camera URL: mint bambu:///tutk?... from the
+// iot-service ttcode endpoint, which returns the per-device TUTK credentials
+// (uid + authkey/passwd/region). Studio then hands this to BambuSource, which
+// runs the TUTK rendezvous (OssTutkCameraSource / IotcClient).
+std::string Agent::remote_camera_url(const std::string& dev_id)
+{
+    auth::Session s;
+    if (auth_store_) s = auth_store_->snapshot();
+    if (s.access_token.empty()) {
+        OBN_WARN("camera_url(remote): no cloud token for dev=%s", dev_id.c_str());
+        return {};
+    }
+
+    const std::string url = obn::cloud::api_host(cloud_region())
+                          + "/v1/iot-service/api/user/ttcode";
+    // The iot-service endpoints gate on the full X-BBL identity header set, not
+    // just the bearer token; a bare Authorization header returns 403 forbidden.
+    // This mirrors bbl_headers() in cloud_print.cpp (kept in sync deliberately).
+    const std::string client_name = obn::config::current().client_name.empty()
+                                   ? std::string("BambuStudio")
+                                   : obn::config::current().client_name;
+#if defined(_WIN32)
+    const std::string os_type = "windows";
+#elif defined(__APPLE__)
+    const std::string os_type = "macos";
+#else
+    const std::string os_type = "linux";
+#endif
+    std::map<std::string, std::string> hdrs{
+        {"Authorization",        "Bearer " + s.access_token},
+        {"Content-Type",         "application/json"},
+        {"Accept",               "application/json"},
+        {"X-BBL-Client-Name",    client_name},
+        {"X-BBL-Client-Type",    "slicer"},
+        {"X-BBL-OS-Type",        os_type},
+        {"X-BBL-Agent-OS-Type",  os_type},
+        {"X-BBL-Language",       "en-US"},
+    };
+    if (!s.user_id.empty())
+        hdrs["X-BBL-Client-ID"] = "slicer:" + s.user_id + ":obn0";
+    // Studio passes get_camera_url a composite cache key "<serial>|<fw>|<proto>";
+    // the ttcode endpoint wants the bare serial and 403s on the composite.
+    std::string serial = dev_id;
+    const auto bar = serial.find('|');
+    if (bar != std::string::npos) serial = serial.substr(0, bar);
+    const std::string req_body = std::string("{\"dev_id\":")
+                               + obn::json::escape(serial) + "}";
+    obn::http::Response resp = obn::http::post_json(url, req_body, hdrs);
+    OBN_INFO("camera_url(remote): ttcode POST http=%ld body=%.700s",
+             resp.status_code, resp.body.c_str());
+    if (resp.status_code != 200 || resp.body.empty()) return {};
+
+    std::string perr;
+    auto root = obn::json::parse(resp.body, &perr);
+    if (!root) {
+        OBN_WARN("camera_url(remote): ttcode JSON parse failed: %s", perr.c_str());
+        return {};
+    }
+
+    auto get = [](const obn::json::Value& v, const char* k) -> std::string {
+        auto f = v.find(k);
+        return f.is_null() ? std::string{} : f.as_string();
+    };
+
+    // Try a flat object first, then a device-keyed array matching dev_id.
+    std::string uid     = get(*root, "ttcode");
+    if (uid.empty()) uid = get(*root, "uid");
+    std::string authkey = get(*root, "authkey");
+    std::string passwd  = get(*root, "passwd");
+    std::string region  = get(*root, "region");
+
+    if (uid.empty()) {
+        for (const char* arr_key : {"devices", "ttcodes", "list", "data"}) {
+            auto arr = root->find(arr_key);
+            if (!arr.is_array()) continue;
+            for (const auto& d : arr.as_array()) {
+                std::string did = get(d, "dev_id");
+                if (did.empty()) did = get(d, "device");
+                if (!dev_id.empty() && !did.empty() && did != dev_id) continue;
+                std::string u = get(d, "ttcode");
+                if (u.empty()) u = get(d, "uid");
+                if (u.empty()) continue;
+                uid     = u;
+                authkey = get(d, "authkey");
+                passwd  = get(d, "passwd");
+                region  = get(d, "region");
+                break;
+            }
+            if (!uid.empty()) break;
+        }
+    }
+
+    if (uid.empty()) {
+        OBN_WARN("camera_url(remote): no ttcode/uid for dev=%s in response", dev_id.c_str());
+        return {};
+    }
+    // The endpoint reports the transport in "type"; only "tutk" maps to our
+    // bambu:///tutk URL. H2-series devices are not served here at all (403).
+    const std::string type = get(*root, "type");
+    if (!type.empty() && type != "tutk") {
+        OBN_WARN("camera_url(remote): dev=%s uses non-tutk transport '%s'; unsupported",
+                 serial.c_str(), type.c_str());
+        return {};
+    }
+    if (region.empty()) region = "us";
+
+    std::string turl = "bambu:///tutk?uid=" + uid + "&authkey=" + authkey
+                     + "&passwd=" + passwd + "&region=" + region
+                     + "&device=" + serial;
+    OBN_INFO("camera_url(remote): built tutk url for dev=%s uid=%.20s region=%s",
+             serial.c_str(), uid.c_str(), region.c_str());
+    return turl;
 }
 
 void Agent::notify_local_message(const std::string& dev_id, const std::string& json)

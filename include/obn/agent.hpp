@@ -402,6 +402,8 @@ public:
     // the printer is cloud-paired. Returns "" when either piece is missing;
     // Studio then shows its normal "connection failed" state.
     std::string camera_url_for(const std::string& dev_id);
+    // Remote (cloud/off-LAN) camera URL via the iot-service ttcode endpoint.
+    std::string remote_camera_url(const std::string& dev_id);
     // Friendly name from the last SSDP packet for this printer IP, or "".
     std::string device_display_name_for_ip(const std::string& dev_ip) const;
     // Bearer + optional Studio certification headers for api.bambulab.com.
