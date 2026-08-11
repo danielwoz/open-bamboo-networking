@@ -79,6 +79,12 @@ struct Settings {
     std::string slicer_cert_pem;
     std::string slicer_crl_pem;
 
+    // Per-install device GUID sent as the `X-BBL-Device-ID` HTTP header.
+    // Generated once (random v4 UUID) and persisted here when first needed, so
+    // it is stable across runs without hardcoding a captured value. May be
+    // overridden per-request via BBL_DEVICE_ID.
+    std::string device_id;
+
     // Value sent in the `X-BBL-Client-Name` HTTP header on cloud REST calls.
     // The MakerWorld `POST /my/task` endpoint authorizes access to the
     // uploaded print content ONLY for the stock client name "BambuStudio";
@@ -111,6 +117,12 @@ Settings load_if_exists(const std::string& config_dir);
 
 // Valid only after load_or_create(); otherwise returns default Settings.
 const Settings& current();
+
+// Per-install device GUID for the `X-BBL-Device-ID` HTTP header. Honours the
+// BBL_DEVICE_ID env var if set; else returns a random v4 UUID generated once and
+// persisted as `device_id` in obn.conf. Stable per install; never a hardcoded
+// constant. Empty if no config_dir is available.
+std::string device_id();
 
 // The config_dir passed to the most recent load_or_create() call.
 // All default file paths (key, cert, CRL, …) are relative to this.

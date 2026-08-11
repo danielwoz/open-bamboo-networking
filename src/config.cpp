@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <random>
 #include <string>
 
 namespace obn::config {
@@ -108,6 +109,7 @@ void apply_key(Settings& out, const std::string& key, const std::string& val)
     else if (key == "slicer_key_pem")               out.slicer_key_pem = val;
     else if (key == "slicer_cert_pem")             out.slicer_cert_pem = val;
     else if (key == "slicer_crl_pem")              out.slicer_crl_pem = val;
+    else if (key == "device_id")                   out.device_id = val;
     else if (key == "client_name")                 out.client_name = val;
     else if (key == "bambusource_log_level")       out.bambusource_log_level = val;
     else if (key == "bambusource_log_stderr")     out.bambusource_log_stderr = val;
@@ -128,6 +130,37 @@ Settings parse_file(const std::filesystem::path& path)
     }
     return out;
 }
+
+// Random v4 UUID (matches the stock plugin's per-install device/slicer GUID).
+std::string random_uuid()
+{
+    static thread_local std::mt19937 gen{std::random_device{}()};
+    std::uniform_int_distribution<int> dis(0, 15);
+    const char* hex = "0123456789abcdef";
+    std::string u = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx";
+    for (char& c : u) {
+        if (c == 'x') c = hex[dis(gen)];
+        else if (c == 'y') c = hex[(dis(gen) & 0x3) | 0x8];
+    }
+    return u;
+}
+
+// Append `key = value` to the obn.conf at `path` (creating it if absent) and
+// update the in-memory Settings. Used to persist the generated per-install
+// device id. Best-effort: returns false if the file cannot be written.
+bool append_key(const std::filesystem::path& path, const std::string& key,
+                const std::string& value)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::ofstream f(path, std::ios::app);
+    if (!f) return false;
+    f << key << " = " << value << "\n";
+    f.close();
+    return !f ? false : true;
+}
+
+
 
 bool write_default_template(const std::filesystem::path& path)
 {
@@ -222,6 +255,20 @@ std::string path_in_dir(const std::string& basename)
     std::lock_guard<std::mutex> lk(g_mu);
     if (g_config_dir.empty()) return {};
     return (std::filesystem::path(g_config_dir) / basename).string();
+}
+
+std::string device_id()
+{
+    if (const char* e = std::getenv("BBL_DEVICE_ID")) if (e[0]) return e;
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (!g_current.device_id.empty()) return g_current.device_id;
+    if (g_config_dir.empty()) return {};
+    // Generate a random v4 UUID and persist it so it is stable across runs.
+    const std::string id = random_uuid();
+    const auto path = config_path(g_config_dir);
+    (void)append_key(path, "device_id", id);
+    g_current.device_id = id;
+    return id;
 }
 
 std::string cloud_api_host_for(const Settings& s, const std::string& region)

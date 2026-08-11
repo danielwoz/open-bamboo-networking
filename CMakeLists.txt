@@ -876,8 +876,10 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     add_test(NAME cloud_print COMMAND cloud_print_test)
     add_executable(get_app_cert_test tests/get_app_cert_test.cpp
         src/app_cert.cpp
+        src/config.cpp
         src/http_client.cpp
         src/json_lite.cpp
+        src/lan_tls.cpp
         src/log.cpp
         src/os_compat.cpp)
     target_include_directories(get_app_cert_test PRIVATE include ${OBN_GENERATED_DIR})

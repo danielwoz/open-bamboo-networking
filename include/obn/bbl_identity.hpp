@@ -14,6 +14,8 @@
 //   BBL_AGENT_VERSION  BBL_CLIENT_VERSION  BBL_DEVICE_ID  BBL_LANGUAGE
 //   BBL_OS_TYPE  BBL_OS_VERSION  BBL_EXEC_INFO
 
+#include "obn/config.hpp"
+
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -70,7 +72,7 @@ inline HeaderList identity_headers(const std::string& access_token,
 #endif
     const std::string agent_ver  = env_or("BBL_AGENT_VERSION",  "02.07.01.51");
     const std::string client_ver = env_or("BBL_CLIENT_VERSION", "02.07.01.57");
-    const std::string device_id  = env_or("BBL_DEVICE_ID", "887b3544-9221-4b48-9838-cc01c35e6e8d");
+    const std::string device_id  = obn::config::device_id();
     const std::string language   = env_or("BBL_LANGUAGE",  "en-US");
 
     HeaderList h;
