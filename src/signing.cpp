@@ -539,10 +539,7 @@ const std::string& app_cert_id()
 std::string device_security_sign_app()
 {
     EVP_PKEY* pkey = app_pkey();
-    if (!pkey)
-        throw std::runtime_error(
-            "signing: no app key loaded; set BBL_APP_KEY_PEM or place app_key.pem "
-            "alongside slicer_key.pem");
+    if (!pkey) return {};
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::system_clock::now().time_since_epoch()).count();
     const std::string ts = std::to_string(ms);

@@ -610,10 +610,16 @@ int create_task(const std::string& api, const std::string& token,
             OBN_INFO("create_task: app cert refreshed via get_app_cert (cert_id=%s)", ac.cert_id.c_str()); }
         else OBN_WARN("create_task: get_app_cert failed (%s); using configured app_cert_id", ac.error.c_str());
     }
-    ohdrs.emplace_back("x-bbl-app-certification-id", app_id);
-    ohdrs.emplace_back("x-bbl-device-security-sign", obn::signing::device_security_sign_app());
+    // Best-effort like the slicer path: omit the signing headers when the app
+    // key is absent rather than sending blanks (device_security_sign_app()
+    // returns {} without a key).
+    if (!app_id.empty())
+        ohdrs.emplace_back("x-bbl-app-certification-id", app_id);
+    std::string app_sign = obn::signing::device_security_sign_app();
+    if (!app_sign.empty())
+        ohdrs.emplace_back("x-bbl-device-security-sign", app_sign);
     req.ordered_headers = std::move(ohdrs);
-    req.body      = body;    req.body      = body;
+    req.body      = body;
     req.timeout_s = 60;
 
     auto resp = obn::http::perform(req);
