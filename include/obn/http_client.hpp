@@ -39,6 +39,11 @@ struct Request {
     Method                                method = Method::GET;
     std::string                           url;
     std::map<std::string, std::string>    headers;
+    // When non-empty, these headers are sent VERBATIM, in this exact order and
+    // casing, and the sorted `headers` map + default UA/Accept/Content-Type are
+    // NOT used. Required to reproduce the genuine plugin's header order byte for
+    // byte (Cloudflare fingerprints on order/casing). See obn::cloud identity_headers.
+    std::vector<std::pair<std::string, std::string>> ordered_headers;
     std::string                           body;   // for POST/PUT/PATCH; also DELETE when set
     std::string                           ca_file;
     bool                                  insecure = false;

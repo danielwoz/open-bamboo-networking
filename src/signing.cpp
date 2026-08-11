@@ -198,7 +198,7 @@ EVP_PKEY* slicer_pkey()
 static std::string active_app_key_path()
 {
     if (const char* e = std::getenv("BBL_APP_KEY_PEM")) if (e[0]) return e;
-    std::string sk = default_key_path();          // .../BambuStudio/slicer_key.pem
+    std::string sk = resolve_key_path();           // .../BambuStudio/slicer_key.pem
     if (sk.empty()) return {};
     auto slash = sk.find_last_of("/\\");
     std::string dir = (slash == std::string::npos) ? std::string(".") : sk.substr(0, slash);

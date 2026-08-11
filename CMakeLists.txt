@@ -840,6 +840,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
         src/cloud_auth.cpp
         src/cloud_presets.cpp
         src/cloud_print.cpp
+        src/app_cert.cpp
         src/cloud_session.cpp
         src/cover_cache.cpp
         src/cover_server.cpp
@@ -884,8 +885,6 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
         OBN_VERSION_STRING="${OBN_VERSION}"
         ABI_VERSION=${OBN_ABI_VERSION_HEX})
     target_link_libraries(get_app_cert_test PRIVATE obn_curl_iface OpenSSL::SSL OpenSSL::Crypto)
-
-endif()
 
     # Hermetic unit tests for obn::oss — pins the SHA-256/HMAC primitives and
     # the AWS SigV4 signing-key derivation against the vendors' published
