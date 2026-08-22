@@ -18,8 +18,8 @@ OBN_ABI int bambu_network_change_user(void* agent, std::string user_info)
     if (!a) return BAMBU_NETWORK_ERR_INVALID_HANDLE;
     OBN_INFO("change_user info_len=%zu", user_info.size());
     if (user_info.empty() || user_info == "{}") {
-        // Studio calls change_user("") on startup / logout.
-        a->clear_session();
+        // Stock: empty / {} do not clear the session (research/08.05-auth.md).
+        // Logout is bambu_network_user_logout only.
         return BAMBU_NETWORK_SUCCESS;
     }
     return a->apply_login_info(user_info);
@@ -44,7 +44,18 @@ OBN_ABI int bambu_network_user_logout(void* agent, bool request)
     // Polled by Studio every ~2 s as a safety-net even when the user
     // isn't logged in. Keep this off the default log to avoid noise.
     OBN_TRACE("user_logout request=%d", request);
-    if (auto* a = as_agent(agent)) a->clear_session();
+    auto* a = as_agent(agent);
+    if (!a) return BAMBU_NETWORK_ERR_INVALID_HANDLE;
+    if (request) {
+        auto s = a->user_session_snapshot();
+        if (!s.access_token.empty()) {
+            // Stock: POST /v1/user-service/my/logout (Bearer). Local
+            // clear always proceeds even if the revoke fails.
+            (void)obn::cloud::logout(a->cloud_region(), s.access_token,
+                                     s.refresh_token);
+        }
+    }
+    a->clear_session();
     return BAMBU_NETWORK_SUCCESS;
 }
 
@@ -137,7 +148,7 @@ std::string build_session_cmd(const obn::Agent* a, bool logout)
 OBN_ABI std::string bambu_network_build_login_cmd(void* agent)
 {
     auto r = build_session_cmd(as_agent(agent), /*logout=*/false);
-    OBN_DEBUG("build_login_cmd -> len=%zu", r.size());
+    OBN_TRACE("build_login_cmd -> len=%zu", r.size());
     return r;
 }
 

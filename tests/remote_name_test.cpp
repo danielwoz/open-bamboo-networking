@@ -1,5 +1,5 @@
 // Unit tests for pick_remote_name / dest_name_for_send_gcode.
-// Ground-truth table: NETWORK_PLUGIN.md §6.14.3 "Stock plugin verification".
+// Ground-truth table: ../research/08.14-file-transfer.md §8.14.3 "Stock plugin verification".
 
 #include "obn/print_job.hpp"
 
@@ -69,6 +69,22 @@ int main()
     expect("lp default",
            obn::print_job::pick_remote_name(params("", "", "")),
            "print.gcode.3mf");
+
+    // --- build_ftp_remote_path (ftp_folder) ---
+    {
+        auto p = params("job");
+        expect("ftp path root",
+               obn::print_job::build_ftp_remote_path(p, "job.gcode.3mf"),
+               "/job.gcode.3mf");
+        p.ftp_folder = "cache";
+        expect("ftp path folder",
+               obn::print_job::build_ftp_remote_path(p, "job.gcode.3mf"),
+               "/cache/job.gcode.3mf");
+        p.ftp_folder = "/cache/";
+        expect("ftp path normalize",
+               obn::print_job::build_ftp_remote_path(p, "job.gcode.3mf"),
+               "/cache/job.gcode.3mf");
+    }
 
     std::printf("remote_name_test: %s\n", g_failed ? "FAILED" : "ok");
     return g_failed ? 1 : 0;

@@ -10,6 +10,14 @@ namespace obn::config {
 
 inline constexpr const char* kConfigFileName = "obn.conf";
 
+// How start_local_print_with_record / start_print deliver the job.
+// Orthogonal to block_cloud (background MQTT/REST).
+enum class CloudPrintMode {
+    CloudOnly,    // both ABIs → run_cloud_print_job (default)
+    TryLanFirst,  // _with_record → local; fail lets Studio fall back to cloud
+    LanOnly,      // _with_record → local; start_print always refused
+};
+
 struct Settings {
     // Logging (empty string = use built-in default for that key)
     std::string log_level;
@@ -29,6 +37,12 @@ struct Settings {
     bool lan_tls_skip_verify      = false;
     int  cloud_mqtt_port          = 8883;
     bool block_cloud              = true;
+
+    // Print delivery for cloud-facing ABIs (see CloudPrintMode)
+    CloudPrintMode cloud_print    = CloudPrintMode::CloudOnly;
+
+    // When true, get_user_tasks returns an empty history envelope.
+    bool cloud_hide_history       = false;
 
     // Print behavior overrides
     bool force_timelapse_external = false;
@@ -55,16 +69,25 @@ struct Settings {
     bool patch_mqtt_ipcam_file       = false;
     bool patch_mqtt_internal_storage = false;
 
-    // Slicer signing key, certificate id, and app-cert provisioning files.
+    // Slicer signing key and app-cert provisioning files.
     // Empty = look for the corresponding file in config_dir:
     //   slicer_key_pem  -> slicer_key.pem
-    //   slicer_cert_id  -> slicer_cert_id.txt
-    //   slicer_cert_pem -> slicer_cert.pem   (app cert chain for app_cert_install)
+    //   slicer_cert_pem -> slicer_cert.pem   (app cert chain; MQTT/HTTP cert_id
+    //                                         is derived from the leaf)
     //   slicer_crl_pem  -> slicer_crl.pem    (app CRL for app_cert_install)
     std::string slicer_key_pem;
-    std::string slicer_cert_id;
     std::string slicer_cert_pem;
     std::string slicer_crl_pem;
+
+    // Value sent in the `X-BBL-Client-Name` HTTP header on cloud REST calls.
+    // The MakerWorld `POST /my/task` endpoint authorizes access to the
+    // uploaded print content ONLY for the stock client name "BambuStudio";
+    // any other value is rejected with HTTP 403 ("no access rights to the
+    // content"), which blocks cloud printing and "local print with record".
+    // Empty = honest default "OpenBambooNetworking" (cloud /my/task will 403).
+    // Set to "BambuStudio" to make cloud printing work by presenting the
+    // stock client identity.
+    std::string client_name;
 
     // BambuSource logging — propagated to libBambuSource via obn.env
     std::string bambusource_log_level;
@@ -90,7 +113,7 @@ Settings load_if_exists(const std::string& config_dir);
 const Settings& current();
 
 // The config_dir passed to the most recent load_or_create() call.
-// All default file paths (key, cert_id, session) are relative to this.
+// All default file paths (key, cert, CRL, …) are relative to this.
 const std::string& dir();
 
 // Join `basename` onto the active config_dir() using the platform's native

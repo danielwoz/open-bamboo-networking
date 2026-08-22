@@ -1,11 +1,9 @@
 #pragma once
 
-// Shared helpers for LAN print submission (FTPS legacy + :6000/brtc).
+// Shared helpers for LAN / hybrid print submission (FTPS + :6000/brtc).
 //
-// The LAN `run_local_print_job` and the cloud `run_cloud_print_job`
-// pipelines both need to (a) pick a printer-friendly remote filename,
-// (b) push the .3mf to the printer (FTPS or :6000 cache upload), and
-// (c) build a `{"print":{"command":"project_file", ...}}` payload for MQTT.
+// `run_local_print_job` uses FTPS or :6000 + MQTT project_file.
+// `run_cloud_print_job` (LAN channel) uses FTPS + cloud /my/task only.
 
 #include <cstdint>
 #include <functional>
@@ -42,6 +40,12 @@ std::string build_file_url(const std::string& absolute_path);
 
 // MQTT url for legacy LAN print after FTPS upload.
 std::string build_ftp_url(const std::string& stored_path);
+
+// Absolute FTPS STOR path: "/[<ftp_folder>/]<remote_name>".
+// Respects PrintParams.ftp_folder (normalized). Does not create the
+// directory — printer FTPS has no MKD; missing folders fail at STOR.
+std::string build_ftp_remote_path(const BBL::PrintParams& p,
+                                  const std::string&      remote_name);
 
 // Performs the actual FTPS STOR of params.filename to remote_path,
 // streaming progress through update_fn as PrintingStageUpload. Obeys
@@ -81,26 +85,5 @@ struct ProjectFileOpts {
 
 std::string build_project_file_json(const BBL::PrintParams& p,
                                     const ProjectFileOpts&  opts);
-
-// Cloud-print variant: emits the RSA-PKCS#1 v1.5 encrypted `url_enc` field
-// *in addition to* the plaintext `url`, not instead of it (per the
-// reverse-networking "5. MQTT.md" middleware spec: the cleartext value stays
-// in the payload, the encrypted value is added alongside). `param` is kept
-// cleartext with no `param_enc` — the spec encrypts `param` only for
-// `gcode_line`, not `project_file`. The caller encrypts `url` before calling
-// this function (see cloud_print.cpp: rsa_pkcs1v15_encrypt_b64).
-struct CloudProjectFileOpts {
-    std::string url;          // cleartext fetch URL (presigned https / ftp:// / ...)
-    std::string url_enc;      // base64(RSA-PKCS1v1.5-encrypt(url))
-    std::string file_path;    // basename / absolute path on printer FS
-    std::string md5;
-    std::string project_id{"0"};
-    std::string profile_id{"0"};
-    std::string task_id{"0"};
-    std::string subtask_id{"0"};
-};
-
-std::string build_cloud_project_file_json(const BBL::PrintParams&    p,
-                                          const CloudProjectFileOpts& opts);
 
 } // namespace obn::print_job

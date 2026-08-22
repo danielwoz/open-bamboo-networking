@@ -15,6 +15,14 @@
 
 using obn::as_agent;
 
+// Stub: BambuStudio ba049f6a2 still dlsym's this but has no GUI call
+// site. Early trees (GUI_App / PresetUpdater) used the return as a base
+// URL for news/banner / updater query strings; those callers were removed.
+// Stock 02.08.01 returns
+//   https://api.bambulab.com/v1/iot-service/api/slicer/resource
+// with no outbound HTTP (string accessor only). Empty here disables the
+// panel if an old Studio build ever calls us.
+// See research/08.10-http.md; probe: plugin_runner --action http_probe.
 OBN_IGNORE_RETURN_CXX_IN_EXTERN_C_BEGIN
 OBN_ABI std::string bambu_network_get_studio_info_url(void* /*agent*/)
 {
@@ -32,6 +40,14 @@ OBN_ABI int bambu_network_set_extra_http_header(void* agent,
     return BAMBU_NETWORK_ERR_INVALID_HANDLE;
 }
 
+// Stub: Message Centre inbox. ABI present since 497be311d; no GUI
+// caller through BambuStudio ba049f6a2 (NetworkAgent wrappers only).
+// Stock 02.08.01 issues
+//   GET /v1/user-service/my/messages/type=<t>&after=<a>&limit=<n>
+// (path uses '/' before the param list, not '?'); prod returned 404
+// for type=0 in our probe. Empty body + http_code=0 keeps the bell
+// clear if something ever calls us.
+// See research/08.10-http.md; probe: plugin_runner --action http_probe.
 OBN_ABI int bambu_network_get_my_message(void* /*agent*/,
                                          int /*type*/, int /*after*/, int /*limit*/,
                                          unsigned int* http_code, std::string* http_body)
@@ -41,6 +57,12 @@ OBN_ABI int bambu_network_get_my_message(void* /*agent*/,
     return BAMBU_NETWORK_SUCCESS;
 }
 
+// Stub: "rate this print" prompt gate (*task_id==0 => nothing to show).
+// NetworkAgent wrappers only — no GUI call site through BambuStudio
+// ba049f6a2. Stock probe (logged-in, idle): no dedicated HTTPS; returned
+// task_id=-1, printable=true. We return task_id=0 / printable=false
+// so Studio never pops a report dialog.
+// See research/08.10-http.md; probe: plugin_runner --action http_probe.
 OBN_ABI int bambu_network_check_user_task_report(void* /*agent*/, int* task_id, bool* printable)
 {
     if (task_id)   *task_id = 0;
@@ -76,8 +98,10 @@ std::string dump_or_null(const obn::json::Value& v)
 //
 // Security note: dev_access_code is the LAN MQTT password (also shown
 // on the printer display). It is returned in plaintext from this endpoint.
-std::string remap_bind_payload(const std::string& raw_body,
-                               std::vector<std::string>* out_dev_ids)
+std::string remap_bind_payload(
+    const std::string& raw_body,
+    std::vector<std::string>* out_dev_ids,
+    std::vector<std::pair<std::string, std::string>>* out_access_codes)
 {
     std::string perr;
     auto root = obn::json::parse(raw_body, &perr);
@@ -120,7 +144,10 @@ std::string remap_bind_payload(const std::string& raw_body,
                 !ts.is_null() ? ts.as_string() : d.find("print_status").as_string());
         }
         out << ',';
-        out << "\"dev_access_code\":" << obn::json::escape(d.find("dev_access_code").as_string());
+        const auto access_code = d.find("dev_access_code").as_string();
+        if (out_access_codes && !dev_id.empty() && !access_code.empty())
+            out_access_codes->emplace_back(dev_id, access_code);
+        out << "\"dev_access_code\":" << obn::json::escape(access_code);
         // Pass-through extras; Studio code paths occasionally look them up.
         if (auto v = d.find("dev_product_name"); !v.is_null())
             out << ",\"dev_product_name\":" << obn::json::escape(v.as_string());
@@ -164,8 +191,16 @@ bool fetch_user_print_info(obn::Agent* a,
     if (out_resp) *out_resp = resp;
     if (resp.status_code != 200 || resp.body.empty()) return false;
 
-    std::string mapped = remap_bind_payload(resp.body, out_dev_ids);
+    std::vector<std::pair<std::string, std::string>> access_codes;
+    std::string mapped = remap_bind_payload(resp.body, out_dev_ids,
+                                            &access_codes);
     if (count_devices(resp.body) == 0) return false;
+
+    // Remember the LAN access code per device so camera_url_for() can mint
+    // bambu:///local URLs (file browser / liveview over LAN) even when no
+    // LAN connect_printer ever runs in this session.
+    for (const auto& [dev_id, code] : access_codes)
+        a->note_device_access_code(dev_id, code);
 
     if (out_mapped) *out_mapped = std::move(mapped);
     return true;
@@ -238,11 +273,67 @@ OBN_ABI int bambu_network_get_user_print_info(void* agent,
     return BAMBU_NETWORK_SUCCESS;
 }
 
-OBN_ABI int bambu_network_get_user_tasks(void* /*agent*/,
-                                         BBL::TaskQueryParams /*params*/,
+OBN_ABI int bambu_network_get_user_tasks(void* agent,
+                                         BBL::TaskQueryParams params,
                                          std::string* http_body)
 {
     if (http_body) http_body->clear();
+
+    auto* a = as_agent(agent);
+    if (!a) return BAMBU_NETWORK_ERR_INVALID_HANDLE;
+
+    // Cloud-only MakerWorld history. Under block_cloud or cloud_hide_history
+    // return an empty but well-formed envelope so Studio's TaskManager /
+    // WebView parsers stay happy instead of treating a transport error as
+    // a hard failure.
+    const auto& cfg = obn::config::current();
+    if (cfg.block_cloud || cfg.cloud_hide_history) {
+        OBN_DEBUG("get_user_tasks: empty (%s)",
+                  cfg.block_cloud ? "block_cloud" : "cloud_hide_history");
+        if (http_body) *http_body = R"({"total":0,"hits":[]})";
+        return BAMBU_NETWORK_SUCCESS;
+    }
+
+    auto s = a->user_session_snapshot();
+    if (s.access_token.empty()) {
+        OBN_WARN("get_user_tasks: no access token");
+        return BAMBU_NETWORK_ERR_INVALID_HANDLE;
+    }
+
+    // Stock: GET /v1/user-service/my/tasks?limit=&offset=&status=[&deviceId=]
+    // Confirmed against MITM of bambu_network_agent/02.08.01.51. Response is
+    // {total, hits:[...]} and Studio parses it verbatim (TaskManager.cpp /
+    // WebViewDialog.cpp) — no remapping needed.
+    std::ostringstream path;
+    path << "/v1/user-service/my/tasks"
+         << "?limit="  << params.limit
+         << "&offset=" << params.offset
+         << "&status=" << params.status;
+    if (!params.dev_id.empty())
+        path << "&deviceId=" << obn::http::url_encode(params.dev_id);
+
+    const std::string url = obn::cloud::api_host(a->cloud_region()) + path.str();
+    auto hdrs = a->cloud_api_http_headers();
+    OBN_INFO("get_user_tasks limit=%d offset=%d status=%d dev=%s",
+             params.limit, params.offset, params.status,
+             params.dev_id.empty() ? "-" : params.dev_id.c_str());
+
+    auto resp = obn::http::get_json(url, hdrs);
+    if (!resp.error.empty()) {
+        OBN_WARN("get_user_tasks: transport: %s", resp.error.c_str());
+        return BAMBU_NETWORK_ERR_INVALID_HANDLE;
+    }
+    if (resp.status_code != 200) {
+        OBN_WARN("get_user_tasks: HTTP %ld body=%s",
+                 resp.status_code,
+                 resp.body.size() > 200
+                     ? (resp.body.substr(0, 200) + "...").c_str()
+                     : resp.body.c_str());
+        return BAMBU_NETWORK_ERR_INVALID_HANDLE;
+    }
+
+    OBN_INFO("get_user_tasks: ok bytes=%zu", resp.body.size());
+    if (http_body) *http_body = std::move(resp.body);
     return BAMBU_NETWORK_SUCCESS;
 }
 
@@ -381,6 +472,14 @@ OBN_ABI int bambu_network_get_printer_firmware(void* agent,
     return BAMBU_NETWORK_SUCCESS;
 }
 
+// Stub: legacy plate lookup for DeviceManager::update_slice_info when
+// plate_idx < 0. Gone by BambuStudio ba049f6a2 — plate now comes from
+// push_status / get_subtask_info (content.info.plate_idx). Stock uses
+// the same wire as get_subtask_info:
+//   GET /v1/iot-service/api/user/task/<id>
+// and fills *plate_index from content.info.plate_idx. Implement there
+// if a fork still needs this; -1 means "unknown plate".
+// See research/08.10-http.md; probe: plugin_runner --action http_probe.
 OBN_ABI int bambu_network_get_task_plate_index(void* /*agent*/,
                                                std::string /*task_id*/, int* plate_index)
 {
@@ -398,6 +497,9 @@ OBN_ABI int bambu_network_get_subtask_info(void* agent,
     if (http_code) *http_code = 0;
     if (http_body) http_body->clear();
 
+    auto* a = as_agent(agent);
+    if (!a) return BAMBU_NETWORK_SUCCESS;
+
     // Synthetic-subtask short-circuit. notify_local_message rewrites
     // zero ids in LAN push_status frames to "lan-<fnv>"; Studio then
     // calls us here to resolve that id. We hand back a minimal
@@ -405,8 +507,7 @@ OBN_ABI int bambu_network_get_subtask_info(void* agent,
     // context.plates[0].thumbnail.url pointing at our local
     // cover_server, which in turn serves the PNG extracted from the
     // printer's /cache/<name>.3mf.
-    auto* a = as_agent(agent);
-    if (a) {
+    {
         obn::Agent::SubtaskCoverInfo info;
         if (a->lookup_synthetic_subtask(subtask_id, &info) &&
             !info.url.empty()) {
@@ -445,10 +546,62 @@ OBN_ABI int bambu_network_get_subtask_info(void* agent,
             return BAMBU_NETWORK_SUCCESS;
         }
     }
-    (void)subtask_id;
+
+    // Real cloud task / subtask id (Device panel cover while a cloud-
+    // recorded print is running). Stock:
+    //   GET /v1/iot-service/api/user/task/<id>
+    // Response is forwarded verbatim — Studio reads
+    // context.plates[<i>].thumbnail.url (+ content.info.plate_idx).
+    // Not gated on block_cloud: this is a read of an already-created
+    // task record (cover URL), not cloud MQTT / print upload.
+    if (subtask_id.empty() || subtask_id == "0" ||
+        subtask_id.rfind("lan-", 0) == 0) {
+        return BAMBU_NETWORK_SUCCESS;
+    }
+
+    auto s = a->user_session_snapshot();
+    if (s.access_token.empty()) {
+        OBN_WARN("get_subtask_info: no access token (id=%s)",
+                 subtask_id.c_str());
+        return BAMBU_NETWORK_SUCCESS;
+    }
+
+    const std::string url = obn::cloud::api_host(a->cloud_region())
+        + "/v1/iot-service/api/user/task/"
+        + obn::http::url_encode(subtask_id);
+    auto hdrs = a->cloud_api_http_headers();
+    OBN_INFO("get_subtask_info: cloud id=%s", subtask_id.c_str());
+    auto resp = obn::http::get_json(url, hdrs);
+    if (http_code) *http_code = static_cast<unsigned int>(resp.status_code);
+
+    if (!resp.error.empty()) {
+        OBN_WARN("get_subtask_info: transport: %s", resp.error.c_str());
+        return BAMBU_NETWORK_SUCCESS;
+    }
+    if (resp.status_code != 200) {
+        OBN_WARN("get_subtask_info: HTTP %ld body=%s",
+                 resp.status_code,
+                 resp.body.size() > 200
+                     ? (resp.body.substr(0, 200) + "...").c_str()
+                     : resp.body.c_str());
+        if (http_body) *http_body = resp.body;
+        return BAMBU_NETWORK_SUCCESS;
+    }
+
+    OBN_INFO("get_subtask_info: ok id=%s bytes=%zu",
+             subtask_id.c_str(), resp.body.size());
+    if (task_json) *task_json = resp.body;
+    if (http_body) *http_body = std::move(resp.body);
     return BAMBU_NETWORK_SUCCESS;
 }
 
+// Stub: legacy slice summary (prediction / weight / thumbnail.url /
+// filaments[]) after get_task_plate_index. Replaced by get_subtask_info
+// (98a7a10ce / 16cee3299); those fields now live in context.plates[].
+// No GUI call site through BambuStudio ba049f6a2. Stock wire was
+//   GET /v1/iot-service/api/user/project/<project_id>?profile_id=
+// (plate_index not in the URL). Empty body is fine for current Studio.
+// See research/08.10-http.md; probe: plugin_runner --action http_probe.
 OBN_ABI int bambu_network_get_slice_info(void* /*agent*/,
                                          std::string /*project_id*/,
                                          std::string /*profile_id*/,

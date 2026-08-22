@@ -1,7 +1,7 @@
 #pragma once
 
 // BambuTunnelLocal wire helpers (TLS :6000 file browser / CTRL RPC).
-// See NETWORK_PLUGIN.md §7.5.1.1 and tools/bambu6000_repl.py.
+// See ../../research/09-bambusource.md §9.5.1.1 and tools/bambu6000_repl.py.
 
 #include <array>
 #include <cstddef>

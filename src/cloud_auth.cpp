@@ -3,7 +3,9 @@
 #include "obn/config.hpp"
 #include "obn/http_client.hpp"
 #include "obn/json_lite.hpp"
+#include "obn/log.hpp"
 
+#include <map>
 #include <sstream>
 
 namespace obn::cloud {
@@ -17,6 +19,14 @@ std::string refresh_body(const std::string& refresh)
        << "\"refreshToken\":" << obn::json::escape(refresh)
        << '}';
     return os.str();
+}
+
+// Stock logout body uses the all-lowercase key `refreshtoken` (not
+// camelCase) and always sends an empty string; Bearer alone is enough
+// (research/08.05-auth.md gap_probe --do-logout).
+std::string logout_body()
+{
+    return "{\"refreshtoken\":\"\"}";
 }
 
 // Extract the common "accessToken" shape. Fields that are absent stay
@@ -93,15 +103,18 @@ AuthResult login_with_ticket(const std::string& region,
 }
 
 AuthResult refresh_token(const std::string& region,
+                         const std::string& access,
                          const std::string& refresh)
 {
     AuthResult r;
-    // Note: the endpoint name varies between Studio versions and the HA
-    // community docs (`/v1/user-service/user/refreshtoken` or
-    // `/v1/user-service/user/refresh-token`). We try the more common
-    // dash-less form; if it 404s we'll iterate later.
-    auto resp = obn::http::post_json(api_host(region) + "/v1/user-service/user/refreshtoken",
-                                     refresh_body(refresh));
+    std::map<std::string, std::string> hdrs;
+    if (!access.empty())
+        hdrs["Authorization"] = "Bearer " + access;
+    // Stock: POST /v1/user-service/user/refreshtoken + Bearer + refreshToken body.
+    auto resp = obn::http::post_json(
+        api_host(region) + "/v1/user-service/user/refreshtoken",
+        refresh_body(refresh),
+        hdrs);
     r.http_status = resp.status_code;
     r.raw_body    = resp.body;
     if (!resp.error.empty()) {
@@ -118,6 +131,31 @@ AuthResult refresh_token(const std::string& region,
     r.ok = !r.access_token.empty();
     if (!r.ok) r.error_message = api_error(*root, resp.status_code);
     return r;
+}
+
+bool logout(const std::string& region,
+            const std::string& access_token,
+            const std::string& /*refresh*/)
+{
+    if (access_token.empty()) return true;
+    std::map<std::string, std::string> hdrs{
+        {"Authorization", "Bearer " + access_token},
+    };
+    // Evidence: MITM stock agent 02.08.01.53 — POST …/my/logout → 200
+    // empty body. Failure must not block local session clear.
+    auto resp = obn::http::post_json(
+        api_host(region) + "/v1/user-service/my/logout",
+        logout_body(),
+        hdrs);
+    if (!resp.error.empty()) {
+        OBN_WARN("cloud logout: transport %s", resp.error.c_str());
+        return false;
+    }
+    if (resp.status_code < 200 || resp.status_code >= 300) {
+        OBN_WARN("cloud logout: http %ld", resp.status_code);
+        return false;
+    }
+    return true;
 }
 
 ProfileResult get_profile(const std::string& region,

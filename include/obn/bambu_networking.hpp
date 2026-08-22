@@ -4,6 +4,7 @@
 #include <string>
 #include <functional>
 #include <map>
+#include <vector>
 
 #ifndef ABI_VERSION
 #error ABI_VERSION must be defined by the build system (see CMakeLists.txt).
@@ -278,6 +279,34 @@ struct FilamentDeleteParams
     std::vector<std::string> ids;
     std::vector<std::string> rfids;
 };
+
+#if ABI_VERSION >= 0x020801
+struct AmsSyncItem {
+    std::string RFID;
+    std::string filamentVendor;
+    std::string filamentType;
+    std::string filamentName;
+    std::string filamentId;
+    bool        isSupport      = false;
+    std::string color;
+    int         colorType      = 0;
+    std::vector<std::string> colors;
+    int         netWeight      = 0;
+    int         totalNetWeight = 0;
+    std::string trayIdName;
+    std::string note;
+    std::string amsSn;
+    std::string slotId;
+    int         amsId          = 0;
+    int         amsType        = 0;
+    bool        createNew      = false;
+};
+
+struct AmsSyncParams {
+    std::string              devId;
+    std::vector<AmsSyncItem> items;
+};
+#endif
 
 struct PublishParams {
     std::string     project_name;

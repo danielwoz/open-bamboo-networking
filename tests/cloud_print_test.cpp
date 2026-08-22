@@ -5,6 +5,7 @@
 
 #include "obn/bambu_networking.hpp"
 #include "obn/json_lite.hpp"
+#include "obn/print_job.hpp"
 
 #include <cstdio>
 #include <string>
@@ -68,7 +69,8 @@ static void test_ams_mapping2_sentinel_from_flat()
     p.ams_mapping  = "[-1]";
     p.ams_mapping2 = "";
     const std::string out = obn::cloud_print::test_ams_mapping2(p);
-    CHECK(out == "[{\"amsId\":255,\"slotId\":255}]");
+    // External-spool sentinel is {amsId:255,slotId:0} (not slotId:255); #48.
+    CHECK(out == "[{\"amsId\":255,\"slotId\":0}]");
 }
 
 static void test_ams_mapping2_index_from_flat()
@@ -88,7 +90,7 @@ static void test_ams_mapping2_index_from_flat()
     CHECK(static_cast<int>(arr[2].find("amsId").as_number())  == 1);
     CHECK(static_cast<int>(arr[2].find("slotId").as_number()) == 0);
     CHECK(static_cast<int>(arr[3].find("amsId").as_number())  == 255);
-    CHECK(static_cast<int>(arr[3].find("slotId").as_number()) == 255);
+    CHECK(static_cast<int>(arr[3].find("slotId").as_number()) == 0);
 }
 
 static void test_ams_mapping2_snake_case_converted_to_camel()
@@ -278,6 +280,54 @@ static void test_task_body_is_valid_json()
 }
 
 // ---------------------------------------------------------------------------
+// project_file payload builder: always emits cleartext url; url_enc is added
+// later by signing::maybe_sign on the cloud MQTT publish path.
+// ---------------------------------------------------------------------------
+
+static void test_lan_project_file_is_plaintext()
+{
+    // LAN-first print trigger: the printer fetches from its own storage over a
+    // local URL, so the payload must carry a cleartext `url` and NO `url_enc`
+    // (mirrors run_local_print_job).
+    BBL::PrintParams p = default_params();
+    obn::print_job::ProjectFileOpts opts;
+    opts.file_path  = "TestProject.gcode.3mf";
+    opts.url        = "ftp:///TestProject.gcode.3mf";
+    opts.md5        = "abc123";
+    opts.project_id = "proj1";
+    opts.profile_id = "42";
+    opts.task_id    = "task9";
+
+    const std::string json = obn::print_job::build_project_file_json(p, opts);
+    auto v = obn::json::parse(json);
+    CHECK(v);
+    CHECK(json.find("\"url_enc\"") == std::string::npos);
+    CHECK(field(json, "print.url") == "ftp:///TestProject.gcode.3mf");
+    CHECK(field(json, "print.command") == "project_file");
+}
+
+static void test_cloud_project_file_builder_also_plaintext()
+{
+    // Cloud channel also builds cleartext `url`; encryption to `url_enc`
+    // happens in maybe_sign (covered by signing_test), not in the builder.
+    BBL::PrintParams p = default_params();
+    obn::print_job::ProjectFileOpts opts;
+    opts.file_path  = "slot.3mf";
+    opts.url        = "https://s3.example/obj?sig=1";
+    opts.md5        = "abc123";
+    opts.project_id = "proj1";
+    opts.profile_id = "42";
+    opts.task_id    = "task9";
+
+    const std::string json = obn::print_job::build_project_file_json(p, opts);
+    auto v = obn::json::parse(json);
+    CHECK(v);
+    CHECK(json.find("\"url_enc\"") == std::string::npos);
+    CHECK(field(json, "print.url") == "https://s3.example/obj?sig=1");
+    CHECK(field(json, "print.command") == "project_file");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -303,6 +353,9 @@ int main()
     test_task_body_sequence_id_is_20000();
     test_task_body_boolean_fields();
     test_task_body_is_valid_json();
+
+    test_lan_project_file_is_plaintext();
+    test_cloud_project_file_builder_also_plaintext();
 
     if (fail_count) {
         std::fprintf(stderr, "%d test(s) failed\n", fail_count);

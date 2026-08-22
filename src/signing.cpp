@@ -6,12 +6,17 @@
 #include "obn/signing.hpp"
 #include "obn/config.hpp"
 #include "obn/json_lite.hpp"
+#include "obn/log.hpp"
 
 #include <openssl/bio.h>
+#include <openssl/bn.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
+#include <openssl/x509.h>
 
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -27,6 +32,8 @@ namespace {
 struct PkeyDel { void operator()(EVP_PKEY*     p) const { EVP_PKEY_free(p); } };
 struct MdDel   { void operator()(EVP_MD_CTX*   p) const { EVP_MD_CTX_free(p); } };
 struct CtxDel  { void operator()(EVP_PKEY_CTX* p) const { EVP_PKEY_CTX_free(p); } };
+struct X509Del { void operator()(X509*         p) const { X509_free(p); } };
+struct BnDel   { void operator()(BIGNUM*       p) const { BN_free(p); } };
 
 static constexpr const char kSignAlg[] = "RSA_SHA256";
 static constexpr const char kSignVer[] = "v1.0";
@@ -38,22 +45,6 @@ static std::string resolve_key_path()
     const auto& cfg = obn::config::current().slicer_key_pem;
     if (!cfg.empty()) return cfg;
     return obn::config::path_in_dir("slicer_key.pem");
-}
-
-// Read cert_id from slicer_cert_id.txt in config_dir.
-static std::string load_cert_id_from_file()
-{
-    std::string path = obn::config::path_in_dir("slicer_cert_id.txt");
-    if (path.empty()) return {};
-    std::FILE* f = std::fopen(path.c_str(), "r");
-    if (!f) return {};
-    char buf[256] = {};
-    if (!std::fgets(buf, sizeof(buf), f)) buf[0] = '\0';
-    std::fclose(f);
-    std::string s(buf);
-    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
-        s.pop_back();
-    return s;
 }
 
 // Reads a whole file into a string. "" on any failure. `path` is an absolute
@@ -74,21 +65,6 @@ static std::string read_pem_file(const std::string& path)
 
 } // namespace
 
-// cert_id identifies the slicer's registered signing certificate on Bambu's
-// backend. It is fixed for the life of a given RSA key pair and is not secret.
-// Priority: obn.conf slicer_cert_id > config_dir/slicer_cert_id.txt
-const std::string& slicer_cert_id()
-{
-    static const std::string id = []() -> std::string {
-        const auto& cfg = obn::config::current().slicer_cert_id;
-        if (!cfg.empty()) return cfg;
-        std::string from_file = load_cert_id_from_file();
-        if (!from_file.empty()) return from_file;
-        return "";
-    }();
-    return id;
-}
-
 std::string slicer_cert_pem()
 {
     const auto& cfg = obn::config::current().slicer_cert_pem;
@@ -101,6 +77,96 @@ std::string slicer_crl_pem()
     const auto& cfg = obn::config::current().slicer_crl_pem;
     return read_pem_file(cfg.empty() ? obn::config::path_in_dir("slicer_crl.pem")
                                      : cfg);
+}
+
+namespace {
+
+// Leaf of slicer_cert.pem (first PEM block). nullptr when absent/unparseable.
+static std::unique_ptr<X509, X509Del> load_slicer_leaf_cert()
+{
+    const std::string pem = slicer_cert_pem();
+    if (pem.empty()) return nullptr;
+    BIO* bio = ::BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
+    if (!bio) return nullptr;
+    X509* cert = ::PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    ::BIO_free(bio);
+    return std::unique_ptr<X509, X509Del>(cert);
+}
+
+static std::string leaf_serial_hex_lower(X509* cert)
+{
+    const ASN1_INTEGER* sn = ::X509_get_serialNumber(cert);
+    if (!sn) return {};
+    std::unique_ptr<BIGNUM, BnDel> bn(::ASN1_INTEGER_to_BN(sn, nullptr));
+    if (!bn) return {};
+    char* hex = ::BN_bn2hex(bn.get());
+    if (!hex) return {};
+    std::string serial(hex);
+    ::OPENSSL_free(hex);
+    for (char& c : serial)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    // Wire form uses an even number of hex digits (byte-aligned).
+    if (serial.size() % 2)
+        serial.insert(serial.begin(), '0');
+    return serial;
+}
+
+static std::string leaf_issuer_rfc2253(X509* cert)
+{
+    X509_NAME* name = ::X509_get_issuer_name(cert);
+    if (!name) return {};
+    BIO* bio = ::BIO_new(::BIO_s_mem());
+    if (!bio) return {};
+    if (::X509_NAME_print_ex(bio, name, 0, XN_FLAG_RFC2253) < 0) {
+        ::BIO_free(bio);
+        return {};
+    }
+    char* data = nullptr;
+    const long len = ::BIO_get_mem_data(bio, &data);
+    std::string issuer;
+    if (data && len > 0)
+        issuer.assign(data, static_cast<std::size_t>(len));
+    ::BIO_free(bio);
+    return issuer;
+}
+
+// Parsed once: MQTT cert_id = serial+issuer; HTTP = issuer:serial.
+struct AppCertIds {
+    std::string mqtt;
+    std::string http;
+};
+
+static const AppCertIds& app_cert_ids()
+{
+    static const AppCertIds ids = []() -> AppCertIds {
+        auto cert = load_slicer_leaf_cert();
+        if (!cert) return {};
+        const std::string serial = leaf_serial_hex_lower(cert.get());
+        const std::string issuer = leaf_issuer_rfc2253(cert.get());
+        if (serial.empty() || issuer.empty()) return {};
+        AppCertIds out;
+        out.mqtt = serial + issuer;
+        out.http = issuer + ":" + serial;
+        return out;
+    }();
+    return ids;
+}
+
+} // namespace
+
+// cert_id identifies the slicer's registered signing certificate on Bambu's
+// backend. Derived from the leaf of slicer_cert.pem:
+//   lowercase_hex(serial) + issuer_RFC2253  (no separator).
+const std::string& slicer_cert_id()
+{
+    return app_cert_ids().mqtt;
+}
+
+// HTTP x-bbl-app-certification-id: issuer_RFC2253 + ":" + serial.lower(),
+// from the same leaf parse as slicer_cert_id().
+const std::string& app_certification_id()
+{
+    return app_cert_ids().http;
 }
 
 namespace {
@@ -185,17 +251,69 @@ bool is_print_payload(const std::string& payload) noexcept
     return true;
 }
 
-// Builds the to_sign string: {"print":{...sorted keys...}}
-// Uses json_lite, whose Object type is std::map, so parse+dump already sorts.
-std::string build_to_sign(const std::string& payload)
+// Applies device-cert field encryption to the parsed `print` object in place.
+// For each cleartext field in kEncryptFields, adds `<field>_enc` (RSA) and
+// keeps the cleartext (Developer Mode needs it; secured callers must strip
+// cleartext themselves). Idempotent when `*_enc` already exists. If a field
+// needs encryption but there is no device key (or RSA fails), logs ERROR and
+// leaves the cleartext — the printer will reject and surface the error.
+void encrypt_print_fields(obn::json::Object& obj, EVP_PKEY* device_pub)
+{
+    static constexpr const char* kEncryptFields[] = {"url", "param"};
+
+    bool needs_encrypt = false;
+    for (const char* field : kEncryptFields) {
+        if (!obj.count(field)) continue;
+        const std::string enc_key = std::string(field) + "_enc";
+        if (!obj.count(enc_key)) {
+            needs_encrypt = true;
+            break;
+        }
+    }
+    if (!needs_encrypt) return;
+
+    if (!device_pub) {
+        OBN_ERROR("no device public key; leaving url/param cleartext "
+                  "(printer will reject if secured)");
+        return;
+    }
+
+    for (const char* field : kEncryptFields) {
+        if (!obj.count(field)) continue;
+        const std::string enc_key = std::string(field) + "_enc";
+        if (obj.count(enc_key)) continue; // already encrypted
+
+        auto it = obj.find(field);
+        if (it == obj.end() || !it->second.is_string()) continue;
+        std::string enc_err;
+        std::string enc = rsa_pkcs1v15_encrypt_b64(device_pub,
+                                                   it->second.as_string(),
+                                                   &enc_err);
+        if (enc.empty()) {
+            OBN_ERROR("RSA encrypt of '%s' failed: %s; leaving cleartext",
+                      field, enc_err.empty() ? "unknown" : enc_err.c_str());
+            continue;
+        }
+        obj[enc_key] = obn::json::Value(std::move(enc));
+        // Keep cleartext: Developer Mode firmware ignores *_enc and only
+        // reads url/param. Secured gcode_line rejects both together — callers
+        // that target secured mode must omit cleartext before maybe_sign
+        // (or gate on fun bit 29). See research/10.03-mqtt-field-encryption.md.
+        // obj.erase(field);
+    }
+}
+
+// Builds the print dump ({...sorted keys...}) after optional field encryption.
+// Uses json_lite, whose Object type is std::map, so dump() already sorts keys.
+std::string build_print_dump(const std::string& payload, EVP_PKEY* device_pub)
 {
     auto root = obn::json::parse(payload);
     if (!root) return {};
-    std::string print_dump;
-    if (root->find("print").kind() == obn::json::Value::Kind::Object)
-        print_dump = root->find("print").dump();
-    if (print_dump.empty()) return {};
-    return std::string("{\"print\":") + print_dump + '}';
+    const obn::json::Value& print = root->find("print");
+    if (print.kind() != obn::json::Value::Kind::Object) return {};
+    obn::json::Object obj = print.as_object(); // copy for mutation
+    encrypt_print_fields(obj, device_pub);
+    return obn::json::Value(std::move(obj)).dump();
 }
 
 // Escapes backslash and double-quote for embedding inside a JSON string
@@ -236,19 +354,19 @@ std::string build_envelope(const std::string& to_sign,
 
 } // namespace
 
-std::string maybe_sign(const std::string& payload_json)
+std::string maybe_sign(const std::string& payload_json, EVP_PKEY* device_pub)
 {
     if (!is_print_payload(payload_json)) return payload_json;
 
     EVP_PKEY* pkey = slicer_pkey();
     if (!pkey) return payload_json;
 
-    const std::string to_sign = build_to_sign(payload_json);
-    if (to_sign.empty()) return payload_json; // malformed; pass through
+    // Encrypt url/param into url_enc/param_enc (when a device key is given)
+    // BEFORE signing, so the signature covers exactly what goes on the wire.
+    const std::string print_dump = build_print_dump(payload_json, device_pub);
+    if (print_dump.empty()) return payload_json; // malformed; pass through
 
-    // Extract the sorted print dump from to_sign to avoid re-parsing.
-    // to_sign has the shape: {"print":<dump>}
-    const std::string print_dump = to_sign.substr(9, to_sign.size() - 10);
+    const std::string to_sign = std::string("{\"print\":") + print_dump + '}';
 
     const std::string sig_b64 = rsa_sha256_sign_b64(
         pkey,
@@ -291,6 +409,70 @@ std::string device_security_sign()
         reinterpret_cast<const unsigned char*>(ts.data()), ts.size());
 }
 
+// Blockwise RSA-PKCS#1 v1.5 encryption -> base64. Splits `plaintext` into
+// <=kMaxChunk-byte pieces so the total ciphertext is a concatenation of
+// key-sized blocks (matching the stock plugin's url_enc / param_enc form).
+std::string rsa_pkcs1v15_encrypt_b64(EVP_PKEY* pub, const std::string& plaintext,
+                                     std::string* err)
+{
+    if (!pub) {
+        if (err) *err = "null public key";
+        return {};
+    }
+
+    // PKCS#1 v1.5 max plaintext per block = RSA modulus bytes - 11.
+    const int key_bytes = EVP_PKEY_size(pub); // ciphertext block size (e.g. 256)
+    if (key_bytes <= 11) {
+        if (err) *err = "RSA key too small";
+        return {};
+    }
+    const std::size_t max_chunk = static_cast<std::size_t>(key_bytes - 11);
+
+    std::unique_ptr<EVP_PKEY_CTX, CtxDel> ctx(EVP_PKEY_CTX_new(pub, nullptr));
+    if (!ctx) {
+        if (err) *err = "EVP_PKEY_CTX_new failed";
+        return {};
+    }
+    if (EVP_PKEY_encrypt_init(ctx.get()) <= 0 ||
+        EVP_PKEY_CTX_set_rsa_padding(ctx.get(), RSA_PKCS1_PADDING) <= 0) {
+        char ebuf[256];
+        ERR_error_string_n(ERR_peek_last_error(), ebuf, sizeof(ebuf));
+        if (err) *err = std::string("encrypt init/padding failed: ") + ebuf;
+        return {};
+    }
+
+    std::vector<unsigned char> out;
+    const auto* p = reinterpret_cast<const unsigned char*>(plaintext.data());
+    std::size_t remaining = plaintext.size();
+    std::size_t offset    = 0;
+    // A zero-length input still produces one block (the plugin never encrypts
+    // empty fields, but keep the loop robust rather than emit nothing).
+    do {
+        const std::size_t chunk = remaining < max_chunk ? remaining : max_chunk;
+        std::size_t block_len = 0;
+        if (EVP_PKEY_encrypt(ctx.get(), nullptr, &block_len, p + offset, chunk) <= 0) {
+            char ebuf[256];
+            ERR_error_string_n(ERR_peek_last_error(), ebuf, sizeof(ebuf));
+            if (err) *err = std::string("EVP_PKEY_encrypt size query failed: ") + ebuf;
+            return {};
+        }
+        const std::size_t base = out.size();
+        out.resize(base + block_len);
+        if (EVP_PKEY_encrypt(ctx.get(), out.data() + base, &block_len,
+                             p + offset, chunk) <= 0) {
+            char ebuf[256];
+            ERR_error_string_n(ERR_peek_last_error(), ebuf, sizeof(ebuf));
+            if (err) *err = std::string("EVP_PKEY_encrypt failed: ") + ebuf;
+            return {};
+        }
+        out.resize(base + block_len);
+        offset    += chunk;
+        remaining -= chunk;
+    } while (remaining > 0);
+
+    return base64_encode(out.data(), out.size());
+}
+
 static constexpr char kB64Tbl[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -308,6 +490,85 @@ std::string base64_encode(const unsigned char* data, std::size_t len)
         out.push_back(i + 2 < len ? kB64Tbl[w & 63] : '=');
     }
     return out;
+}
+
+bool slicer_app_cert_usable()
+{
+    // app_cert_install needs the app certificate PEM + CRL only (no private
+    // key). Defaults under config_dir count when obn.conf paths are empty.
+    // Soft date/revocation issues still return true (firmware accepts expired
+    // official CRLs); WARN once — Studio calls install_device_cert ~1 Hz.
+    static bool warned_cert_dates = false;
+    static bool warned_crl_dates = false;
+    static bool warned_revoked = false;
+
+    const std::string pem = slicer_cert_pem();
+    if (pem.empty()) return false;
+    const std::string crl_pem = slicer_crl_pem();
+    if (crl_pem.empty()) return false;
+
+    BIO* bio = ::BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
+    if (!bio) return false;
+    X509* cert = ::PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    ::BIO_free(bio);
+    if (!cert) {
+        OBN_ERROR("signing: slicer_cert.pem is not a valid X.509 certificate");
+        return false;
+    }
+
+    // notBefore must be in the past; notAfter must be in the future.
+    // X509_cmp_current_time: <0 if asn1_time is before now, >0 if after.
+    const ASN1_TIME* not_before = ::X509_get0_notBefore(cert);
+    const ASN1_TIME* not_after  = ::X509_get0_notAfter(cert);
+    const bool not_yet = not_before && ::X509_cmp_current_time(not_before) > 0;
+    const bool expired = !not_after || ::X509_cmp_current_time(not_after) < 0;
+    if ((not_yet || expired) && !warned_cert_dates) {
+        warned_cert_dates = true;
+        OBN_WARN("signing: slicer app certificate is %s "
+                 "(still usable for app_cert_install)",
+                 expired ? "expired" : "not yet valid");
+    }
+
+    BIO* crl_bio = ::BIO_new_mem_buf(crl_pem.data(),
+                                     static_cast<int>(crl_pem.size()));
+    if (!crl_bio) {
+        ::X509_free(cert);
+        return false;
+    }
+    X509_CRL* crl = ::PEM_read_bio_X509_CRL(crl_bio, nullptr, nullptr, nullptr);
+    ::BIO_free(crl_bio);
+    if (!crl) {
+        ::X509_free(cert);
+        OBN_ERROR("signing: slicer_crl.pem is not a valid X.509 CRL");
+        return false;
+    }
+
+    // lastUpdate (thisUpdate) must be in the past; nextUpdate, when present,
+    // must be in the future. Missing nextUpdate is treated as still valid —
+    // some CRLs omit it; request_app_cert_install still needs the PEM.
+    // Official Bambu CRLs are often past nextUpdate; printer still accepts them.
+    const ASN1_TIME* last_update = ::X509_CRL_get0_lastUpdate(crl);
+    const ASN1_TIME* next_update = ::X509_CRL_get0_nextUpdate(crl);
+    const bool crl_not_yet = last_update && ::X509_cmp_current_time(last_update) > 0;
+    const bool crl_expired = next_update && ::X509_cmp_current_time(next_update) < 0;
+    if ((crl_not_yet || crl_expired) && !warned_crl_dates) {
+        warned_crl_dates = true;
+        OBN_WARN("signing: slicer app CRL is %s "
+                 "(still usable for app_cert_install; firmware ignores nextUpdate)",
+                 crl_expired ? "expired" : "not yet valid");
+    }
+
+    // Soft-warn if this leaf appears on the CRL (still allow install).
+    X509_REVOKED* revoked = nullptr;
+    if (::X509_CRL_get0_by_cert(crl, &revoked, cert) == 1 && !warned_revoked) {
+        warned_revoked = true;
+        OBN_WARN("signing: slicer app certificate is revoked on slicer_crl.pem "
+                 "(still usable for app_cert_install)");
+    }
+
+    ::X509_CRL_free(crl);
+    ::X509_free(cert);
+    return true;
 }
 
 } // namespace obn::signing
