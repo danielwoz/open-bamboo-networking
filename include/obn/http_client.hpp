@@ -18,6 +18,8 @@
 //     the JSON parsing themselves (we keep a zero-dep JSON reader
 //     helper in `json_lite.hpp`).
 
+#include "obn/bbl_identity.hpp"
+
 #include <cstdint>
 #include <map>
 #include <string>
@@ -65,13 +67,13 @@ Response perform(const Request& req);
 
 // Convenience: GET with JSON Accept header.
 Response get_json(const std::string& url,
-                  const std::map<std::string, std::string>& headers = {},
+                  const obn::bbl::HeaderList& headers = {},
                   const std::string& ca_file = {});
 
 // Convenience: POST application/json.
 Response post_json(const std::string& url,
                    const std::string& body,
-                   const std::map<std::string, std::string>& headers = {},
+                   const obn::bbl::HeaderList& headers = {},
                    const std::string& ca_file = {});
 
 // URL-encode a single component (RFC 3986 unreserved + percent).

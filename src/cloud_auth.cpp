@@ -1,6 +1,7 @@
 #include "obn/cloud_auth.hpp"
 
 #include "obn/config.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/http_client.hpp"
 #include "obn/json_lite.hpp"
 #include "obn/log.hpp"
@@ -107,9 +108,9 @@ AuthResult refresh_token(const std::string& region,
                          const std::string& refresh)
 {
     AuthResult r;
-    std::map<std::string, std::string> hdrs;
+    obn::bbl::HeaderList hdrs;
     if (!access.empty())
-        hdrs["Authorization"] = "Bearer " + access;
+        hdrs.emplace_back("Authorization", "Bearer " + access);
     // Stock: POST /v1/user-service/user/refreshtoken + Bearer + refreshToken body.
     auto resp = obn::http::post_json(
         api_host(region) + "/v1/user-service/user/refreshtoken",
@@ -138,7 +139,7 @@ bool logout(const std::string& region,
             const std::string& /*refresh*/)
 {
     if (access_token.empty()) return true;
-    std::map<std::string, std::string> hdrs{
+    obn::bbl::HeaderList hdrs{
         {"Authorization", "Bearer " + access_token},
     };
     // Evidence: MITM stock agent 02.08.01.53 — POST …/my/logout → 200
@@ -162,7 +163,7 @@ ProfileResult get_profile(const std::string& region,
                           const std::string& access_token)
 {
     ProfileResult r;
-    std::map<std::string, std::string> hdrs{
+    obn::bbl::HeaderList hdrs{
         {"Authorization", "Bearer " + access_token},
     };
     auto resp = obn::http::get_json(api_host(region) + "/v1/user-service/my/profile", hdrs);

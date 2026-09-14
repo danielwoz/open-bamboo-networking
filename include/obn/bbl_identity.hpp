@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -42,9 +43,19 @@ inline std::string env_or(const char* k, const char* d)
     return std::string(v && v[0] ? v : d);
 }
 
-// include_client_id: genuine sends X-BBL-Client-ID only on POST + single-resource
-//                    GETs (task/<id>, consent), not on list GETs / get_app_cert.
-// with_content_type: genuine sends Content-Type on most calls but NOT get_app_cert.
+// Controls what the ordered identity block includes. Each field maps to one
+// optional header; defaults reproduce the full genuine block. Callers pass the
+// subset they need so the emitted set/order matches what they send today.
+struct IdentityHeadersOptions {
+    bool        include_client_id = false;  // X-BBL-Client-ID
+    bool        with_content_type = true;   // trailing Content-Type
+    bool        include_accept   = true;    // accept: application/json
+    std::string client_name;                // X-BBL-Client-Name ("" = BambuStudio)
+    std::string client_id_suffix;           // e.g. "obn0"; "" = per-request 4-hex
+    // Tail headers appended in order after the identity block.
+    std::vector<std::pair<std::string, std::string>> extra;
+};
+
 inline HeaderList identity_headers(const std::string& access_token,
                                    const std::string& user_id,
                                    bool include_client_id,
@@ -96,4 +107,45 @@ inline HeaderList identity_headers(const std::string& access_token,
     return h;
 }
 
+// Project an ordered header list to a std::map for the read/check convenience of
+// legacy callers (e.g. `hdrs.find("Authorization")`). Order is lost (map sorts),
+// but values/casing are preserved. Kept only for callers that inspect, not send.
+inline std::map<std::string, std::string> as_map(const HeaderList& h)
+{
+    std::map<std::string, std::string> m;
+    for (const auto& [k, v] : h) m[k] = v;
+    return m;
+}
+
+// Build an ordered identity block for a caller that needs a leaner field set than
+// the full genuine block. `opt` selects what's included/excluded so each caller
+// reproduces its exact historical field set without changing behavior.
+inline HeaderList identity_headers(const std::string& access_token,
+                                 const std::string& user_id,
+                                 const IdentityHeadersOptions& opt)
+{
+    auto h = identity_headers(access_token, user_id, opt.include_client_id,
+                             opt.with_content_type);
+    HeaderList out;
+    out.reserve(h.size() + opt.extra.size());
+    for (auto& kv : h) {
+        const std::string& name = kv.first;
+        if (name == "X-BBL-Client-ID")
+            continue;  // rebuilt below so the caller's suffix (or a fresh one) is used
+        if (name == "accept" && !opt.include_accept)
+            continue;
+        if (name == "Content-Type" && !opt.with_content_type)
+            continue;
+        if (name == "X-BBL-Client-Name" && !opt.client_name.empty())
+            kv.second = opt.client_name;
+        out.emplace_back(kv.first, kv.second);
+    }
+    if (opt.include_client_id && !user_id.empty()) {
+        const std::string suffix = opt.client_id_suffix.empty()
+                                    ? client_id_suffix() : opt.client_id_suffix;
+        out.emplace_back("X-BBL-Client-ID", "slicer:" + user_id + ":" + suffix);
+    }
+    for (const auto& kv : opt.extra) out.emplace_back(kv.first, kv.second);
+    return out;
+}
 }  // namespace obn::bbl

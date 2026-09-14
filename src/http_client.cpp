@@ -253,27 +253,27 @@ Response perform(const Request& req)
 }
 
 Response get_json(const std::string& url,
-                  const std::map<std::string, std::string>& headers,
+                  const obn::bbl::HeaderList& headers,
                   const std::string& ca_file)
 {
     Request r;
     r.method  = Method::GET;
     r.url     = url;
-    r.headers = headers;
+    r.ordered_headers = headers;
     r.ca_file = ca_file;
     return perform(r);
 }
 
 Response post_json(const std::string& url,
                    const std::string& body,
-                   const std::map<std::string, std::string>& headers,
+                   const obn::bbl::HeaderList& headers,
                    const std::string& ca_file)
 {
     Request r;
     r.method  = Method::POST;
     r.url     = url;
     r.body    = body;
-    r.headers = headers;
+    r.ordered_headers = headers;
     r.ca_file = ca_file;
     return perform(r);
 }

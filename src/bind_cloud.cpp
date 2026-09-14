@@ -5,6 +5,7 @@
 #include "obn/cloud_auth.hpp"
 #include "obn/config.hpp"
 #include "obn/http_client.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/json_lite.hpp"
 #include "obn/lan_bind_tcp.hpp"
 #include "obn/log.hpp"
@@ -22,26 +23,26 @@ std::string api_base(Agent* a)
 
 obn::http::Response http_patch(const std::string& url,
                                const std::string& body,
-                               const std::map<std::string, std::string>& hdrs)
+                               const obn::bbl::HeaderList& hdrs)
 {
     obn::http::Request r;
-    r.method  = obn::http::Method::PATCH;
-    r.url     = url;
-    r.body    = body;
-    r.headers = hdrs;
+    r.method          = obn::http::Method::PATCH;
+    r.url             = url;
+    r.body            = body;
+    r.ordered_headers = hdrs;
     return obn::http::perform(r);
 }
 
 obn::http::Response http_delete_json(
     const std::string& url,
     const std::string& body,
-    const std::map<std::string, std::string>& hdrs)
+    const obn::bbl::HeaderList& hdrs)
 {
     obn::http::Request r;
     r.method  = obn::http::Method::DEL;
     r.url     = url;
     r.body    = body;
-    r.headers = hdrs;
+    r.ordered_headers = hdrs;
     return obn::http::perform(r);
 }
 
@@ -93,7 +94,7 @@ int ping_bind(Agent* agent, const std::string& ping_code)
 {
     if (!agent || !agent->user_logged_in()) return BAMBU_NETWORK_ERR_BIND_FAILED;
     auto hdrs = agent->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (obn::bbl::as_map(hdrs).count("Authorization") == 0) {
         OBN_WARN("ping_bind: not logged in");
         return BAMBU_NETWORK_ERR_BIND_FAILED;
     }
@@ -134,7 +135,7 @@ int bind_lan_to_account(Agent* agent,
     }
 
     auto hdrs = agent->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (obn::bbl::as_map(hdrs).count("Authorization") == 0) {
         emit(update_fn, BBL::LoginStageFinished, BAMBU_NETWORK_ERR_BIND_FAILED,
              "missing bearer token");
         return BAMBU_NETWORK_ERR_BIND_FAILED;

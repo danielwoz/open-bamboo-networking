@@ -10,6 +10,7 @@
 #include "obn/cloud_auth.hpp"
 #include "obn/config.hpp"
 #include "obn/http_client.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/json_lite.hpp"
 #include "obn/log.hpp"
 
@@ -184,7 +185,7 @@ bool fetch_user_print_info(obn::Agent* a,
                            std::vector<std::string>* out_dev_ids)
 {
     const std::string url = obn::cloud::api_host(a->cloud_region()) + path;
-    std::map<std::string, std::string> hdrs{
+    obn::bbl::HeaderList hdrs{
         {"Authorization", "Bearer " + s.access_token},
     };
     auto resp = obn::http::get_json(url, hdrs);
@@ -405,7 +406,7 @@ OBN_ABI int bambu_network_get_printer_firmware(void* agent,
                 // X-BBL-Client-ID format confirmed from MITM: slicer:{user_id}:{4-char-hex}.
                 // The 4-character suffix derivation from the stock plugin binary
                 // is not yet confirmed; "0000" is a placeholder.
-                std::map<std::string, std::string> hdrs{
+                obn::bbl::HeaderList hdrs{
                     {"Authorization",    "Bearer " + s.access_token},
                     {"X-BBL-Client-ID",  "slicer:" + s.user_id + ":0000"},
                 };

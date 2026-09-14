@@ -2123,18 +2123,19 @@ std::string Agent::device_display_name_for_ip(const std::string& dev_ip) const
     return root->find("dev_name").as_string();
 }
 
-std::map<std::string, std::string> Agent::cloud_api_http_headers() const
+obn::bbl::HeaderList Agent::cloud_api_http_headers() const
 {
-    std::map<std::string, std::string> h;
-    obn::auth::Session                 s;
+    obn::bbl::HeaderList h;
+    obn::auth::Session   s;
     {
         std::lock_guard<std::mutex> lk(mu_);
         s = auth_store_ ? auth_store_->snapshot() : obn::auth::Session{};
-        for (const auto& kv : extra_http_headers_) h[kv.first] = kv.second;
+        for (const auto& kv : extra_http_headers_) h.emplace_back(kv.first, kv.second);
     }
-    if (!s.access_token.empty()) h["Authorization"] = "Bearer " + s.access_token;
-    h["Accept"]        = "application/json";
-    h["Content-Type"]  = "application/json";
+    if (!s.access_token.empty())
+        h.emplace_back("Authorization", "Bearer " + s.access_token);
+    h.emplace_back("Accept",       "application/json");
+    h.emplace_back("Content-Type", "application/json");
     return h;
 }
 

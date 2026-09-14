@@ -14,6 +14,7 @@
 
 #include "obn/auth.hpp"
 #include "obn/bambu_networking.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/mqtt_client.hpp"
 
 namespace obn {
@@ -396,7 +397,7 @@ public:
     // Friendly name from the last SSDP packet for this printer IP, or "".
     std::string device_display_name_for_ip(const std::string& dev_ip) const;
     // Bearer + optional Studio certification headers for api.bambulab.com.
-    std::map<std::string, std::string> cloud_api_http_headers() const;
+    obn::bbl::HeaderList cloud_api_http_headers() const;
 
     // ------------------------------------------------------------------
     // User preset cache (bambu_network_get_setting_list2 -> get_user_presets).

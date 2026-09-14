@@ -11,6 +11,7 @@
 #include "obn/bambu_networking.hpp"
 #include "obn/cloud_auth.hpp"
 #include "obn/http_client.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/json_lite.hpp"
 #include "obn/log.hpp"
 #include "obn/oss_sign.hpp"
@@ -237,7 +238,7 @@ OBN_ABI int bambu_network_put_model_mall_rating(void* agent,
     obn::http::Request req;
     req.method  = obn::http::Method::PUT;
     req.url     = url;
-    req.headers = a->cloud_api_http_headers();
+    req.ordered_headers = a->cloud_api_http_headers();
     req.body    = Value(std::move(body)).dump();
     OBN_INFO("put_model_mall_rating: id=%d score=%d images=%zu",
              rating_id, score, images.size());
@@ -283,10 +284,9 @@ OBN_ABI int bambu_network_get_oss_config(void* agent,
     }
 
     const std::string api = obn::cloud::api_host(a->cloud_region());
-    std::map<std::string, std::string> hdrs;
-    hdrs["Authorization"] = "Bearer " + session.access_token;
-    hdrs["Accept"]        = "application/json";
-
+    obn::bbl::HeaderList hdrs;
+    hdrs.emplace_back("Authorization", "Bearer " + session.access_token);
+    hdrs.emplace_back("Accept",        "application/json");
     for (const char* path : {"/v1/user-service/my/ossconfig?useType=1",
                              "/v1/user-service/my/s3config?useType=1"}) {
         auto resp = obn::http::get_json(api + path, hdrs);

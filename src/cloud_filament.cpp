@@ -3,9 +3,11 @@
 #include "obn/agent.hpp"
 #include "obn/bambu_networking.hpp"
 #include "obn/cloud_auth.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/http_client.hpp"
 #include "obn/log.hpp"
 
+#include <algorithm>
 #include <sstream>
 #include <string>
 
@@ -182,25 +184,27 @@ std::string build_ams_sync_body(const BBL::AmsSyncParams& params)
 // so callers can short-circuit with the right BAMBU_NETWORK_* code.
 bool prepare(Agent* a,
              std::string* out_body,
-             std::map<std::string, std::string>* hdrs)
+             obn::bbl::HeaderList* hdrs)
 {
     if (out_body) out_body->clear();
     if (!a) return false;
     *hdrs = a->cloud_api_http_headers();
-    return hdrs->find("Authorization") != hdrs->end();
+    return obn::bbl::as_map(*hdrs).count("Authorization") != 0;
 }
 
 } // namespace
 
 int list(Agent* a, const BBL::FilamentQueryParams& params, std::string* out_body)
 {
-    std::map<std::string, std::string> hdrs;
+    obn::bbl::HeaderList hdrs;
     if (!prepare(a, out_body, &hdrs)) {
         OBN_WARN("cloud_filament::list: not logged in");
         return BAMBU_NETWORK_ERR_GET_FILAMENTS_FAILED;
     }
     // GET: avoid Content-Type so picky backends don't 415.
-    hdrs.erase("Content-Type");
+    hdrs.erase(std::remove_if(hdrs.begin(), hdrs.end(),
+                              [](const auto& kv) { return kv.first == "Content-Type"; }),
+               hdrs.end());
 
     const std::string url = base_v2(a) + build_list_query(params);
     auto resp = obn::http::get_json(url, hdrs);
@@ -221,7 +225,7 @@ int list(Agent* a, const BBL::FilamentQueryParams& params, std::string* out_body
 
 int create(Agent* a, const std::string& request_body, std::string* out_body)
 {
-    std::map<std::string, std::string> hdrs;
+    obn::bbl::HeaderList hdrs;
     if (!prepare(a, out_body, &hdrs)) {
         OBN_WARN("cloud_filament::create: not logged in");
         return BAMBU_NETWORK_ERR_CREATE_FILAMENT_FAILED;
@@ -243,7 +247,7 @@ int create(Agent* a, const std::string& request_body, std::string* out_body)
 int update(Agent* a, const std::string& spool_id,
            const std::string& request_body, std::string* out_body)
 {
-    std::map<std::string, std::string> hdrs;
+    obn::bbl::HeaderList hdrs;
     if (!prepare(a, out_body, &hdrs)) {
         OBN_WARN("cloud_filament::update: not logged in");
         return BAMBU_NETWORK_ERR_UPDATE_FILAMENT_FAILED;
@@ -252,7 +256,7 @@ int update(Agent* a, const std::string& spool_id,
     obn::http::Request req;
     req.method  = obn::http::Method::PUT;
     req.url     = base_v2(a);
-    req.headers = hdrs;
+    req.ordered_headers = hdrs;
     req.body    = request_body;
     auto resp   = obn::http::perform(req);
     OBN_INFO("cloud_filament::update id='%s' http=%ld bytes=%zu req_len=%zu",
@@ -271,7 +275,7 @@ int update(Agent* a, const std::string& spool_id,
 int batch_delete(Agent* a, const BBL::FilamentDeleteParams& params,
                  std::string* out_body)
 {
-    std::map<std::string, std::string> hdrs;
+    obn::bbl::HeaderList hdrs;
     if (!prepare(a, out_body, &hdrs)) {
         OBN_WARN("cloud_filament::batch_delete: not logged in");
         return BAMBU_NETWORK_ERR_DELETE_FILAMENT_FAILED;
@@ -285,7 +289,7 @@ int batch_delete(Agent* a, const BBL::FilamentDeleteParams& params,
     obn::http::Request req;
     req.method  = obn::http::Method::DEL;
     req.url     = base_v2(a) + "/batch";
-    req.headers = hdrs;
+    req.ordered_headers = hdrs;
     req.body    = build_delete_body(params);
     auto resp   = obn::http::perform(req);
     OBN_INFO("cloud_filament::batch_delete http=%ld ids=%zu rfids=%zu",
@@ -302,12 +306,14 @@ int batch_delete(Agent* a, const BBL::FilamentDeleteParams& params,
 
 int config(Agent* a, std::string* out_body)
 {
-    std::map<std::string, std::string> hdrs;
+    obn::bbl::HeaderList hdrs;
     if (!prepare(a, out_body, &hdrs)) {
         OBN_WARN("cloud_filament::config: not logged in");
         return BAMBU_NETWORK_ERR_GET_FILAMENT_CONFIG_FAILED;
     }
-    hdrs.erase("Content-Type");
+    hdrs.erase(std::remove_if(hdrs.begin(), hdrs.end(),
+                              [](const auto& kv) { return kv.first == "Content-Type"; }),
+               hdrs.end());
 
     auto resp = obn::http::get_json(base_config(a), hdrs);
     OBN_INFO("cloud_filament::config http=%ld bytes=%zu",
@@ -326,7 +332,7 @@ int config(Agent* a, std::string* out_body)
 
 int sync_ams(Agent* a, const BBL::AmsSyncParams& params, std::string* out_body)
 {
-    std::map<std::string, std::string> hdrs;
+    obn::bbl::HeaderList hdrs;
     if (!prepare(a, out_body, &hdrs)) {
         OBN_WARN("cloud_filament::sync_ams: not logged in");
         return BAMBU_NETWORK_ERR_UPDATE_FILAMENT_FAILED;

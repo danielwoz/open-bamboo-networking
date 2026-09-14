@@ -27,6 +27,7 @@
 // returns < 0 so Studio can fall back to start_print.
 
 #include "obn/agent.hpp"
+#include "obn/bbl_identity.hpp"
 
 #include "obn/bambu_networking.hpp"
 #include "obn/signing.hpp"
@@ -239,24 +240,16 @@ constexpr const char* kOsType =
 // fields, but POST /my/task enforces two by VALUE: X-BBL-Client-Name
 // (must be "BambuStudio" to access the uploaded content) and
 // X-BBL-OS-Type (must match the uploader's OS). See config::client_name.
-std::map<std::string, std::string> bbl_headers(const std::string& access_token,
-                                               const std::string& user_id)
+obn::bbl::HeaderList bbl_headers(const std::string& access_token,
+                                const std::string& user_id)
 {
-    const auto& cfg_client_name = obn::config::current().client_name;
-    std::map<std::string, std::string> h;
-    h["Authorization"]        = "Bearer " + access_token;
-    h["Content-Type"]         = "application/json";
-    h["Accept"]               = "application/json";
-    h["X-BBL-Client-Name"]    = cfg_client_name.empty() ? std::string{"OpenBambooNetworking"}
-                                                        : cfg_client_name;
-    h["X-BBL-Client-Type"]    = "slicer";
-    h["X-BBL-OS-Type"]        = kOsType;
-    h["X-BBL-Agent-OS-Type"]  = kOsType;
-    h["X-BBL-Language"]       = "en-US";
-    h["X-BBL-Executable-info"]= "{}";
-    if (!user_id.empty())
-        h["X-BBL-Client-ID"] = "slicer:" + user_id + ":obn0";
-    return h;
+    obn::bbl::IdentityHeadersOptions opt;
+    opt.include_client_id = true;
+    opt.with_content_type = true;
+    opt.include_accept   = true;
+    opt.client_name      = obn::config::current().client_name;  // "" => BambuStudio
+    opt.client_id_suffix = "obn0";
+    return obn::bbl::identity_headers(access_token, user_id, opt);
 }
 
 bool status_ok(long code) { return code >= 200 && code < 300; }
@@ -295,7 +288,7 @@ int create_project(const std::string& api, const std::string& token,
     obn::http::Request req;
     req.method  = obn::http::Method::POST;
     req.url     = api + "/v1/iot-service/api/user/project";
-    req.headers = bbl_headers(token, user_id);
+    req.ordered_headers = bbl_headers(token, user_id);
     req.body    = std::string("{\"name\":") + json_escape(name) + "}";
     req.timeout_s = 30;
 
@@ -395,7 +388,7 @@ int notify_upload(const std::string& api, const std::string& token,
     obn::http::Request req;
     req.method  = obn::http::Method::PUT;
     req.url     = api + "/v1/iot-service/api/user/notification";
-    req.headers = bbl_headers(token, user_id);
+    req.ordered_headers = bbl_headers(token, user_id);
     std::ostringstream os;
     os << "{\"upload\":{\"origin_file_name\":" << json_escape(origin_name)
        << ",\"ticket\":" << json_escape(ticket) << "}}";
@@ -418,8 +411,14 @@ int poll_upload(const std::string& api, const std::string& token,
                 BBL::OnUpdateStatusFn update_fn,
                 BBL::WasCancelledFn cancel_fn)
 {
-    std::map<std::string, std::string> hdrs = bbl_headers(token, user_id);
-    hdrs.erase("Content-Type"); // GET
+    // GET: omit Content-Type.
+    obn::bbl::IdentityHeadersOptions opt;
+    opt.include_client_id = true;
+    opt.with_content_type = false;
+    opt.include_accept   = true;
+    opt.client_name      = obn::config::current().client_name;
+    opt.client_id_suffix = "obn0";
+    auto hdrs = obn::bbl::identity_headers(token, user_id, opt);
     const std::string url = api
         + "/v1/iot-service/api/user/notification?action=upload&ticket="
         + obn::http::url_encode(ticket);
@@ -472,7 +471,7 @@ int patch_project(const std::string& api, const std::string& token,
     obn::http::Request req;
     req.method    = obn::http::Method::PATCH;
     req.url       = api + "/v1/iot-service/api/user/project/" + project_id;
-    req.headers   = bbl_headers(token, user_id);
+    req.ordered_headers = bbl_headers(token, user_id);
     req.timeout_s = 30;
     std::ostringstream os;
     os << "{\"profile_id\":" << json_escape(profile_id)
@@ -496,8 +495,14 @@ int get_upload_url(const std::string& api, const std::string& token,
                    std::string* out_url,
                    BBL::OnUpdateStatusFn update_fn)
 {
-    std::map<std::string, std::string> hdrs = bbl_headers(token, user_id);
-    hdrs.erase("Content-Type"); // GET
+    // GET: omit Content-Type.
+    obn::bbl::IdentityHeadersOptions opt;
+    opt.include_client_id = true;
+    opt.with_content_type = false;
+    opt.include_accept   = true;
+    opt.client_name      = obn::config::current().client_name;
+    opt.client_id_suffix = "obn0";
+    auto hdrs = obn::bbl::identity_headers(token, user_id, opt);
     std::string url = api + "/v1/iot-service/api/user/upload?models="
                     + obn::http::url_encode(model_slot);
     auto resp = obn::http::get_json(url, hdrs);
@@ -599,10 +604,14 @@ int create_task(const std::string& api, const std::string& token,
     obn::http::Request req;
     req.method  = obn::http::Method::POST;
     req.url     = api + "/v1/user-service/my/task";
-    auto hdrs = bbl_headers(token, user_id);
+    obn::bbl::HeaderList hdrs = bbl_headers(token, user_id);
+    const auto hmap = obn::bbl::as_map(hdrs);
     OBN_DEBUG("cloud_print: create_task hdr X-BBL-Client-Name=%s X-BBL-OS-Type=%s "
               "(config client_name=%s) uid=%s",
-              hdrs["X-BBL-Client-Name"].c_str(), hdrs["X-BBL-OS-Type"].c_str(),
+              hmap.count("X-BBL-Client-Name")
+                  ? hmap.at("X-BBL-Client-Name").c_str() : "?",
+              hmap.count("X-BBL-OS-Type")
+                  ? hmap.at("X-BBL-OS-Type").c_str() : "?",
               obn::config::current().client_name.c_str(), user_id.c_str());
     // Signing headers are best-effort: when no slicer key/cert is configured
     // these come back empty, and we omit them rather than send blanks. The
@@ -617,9 +626,11 @@ int create_task(const std::string& api, const std::string& token,
     OBN_DEBUG("cloud_print: create_task sign hdrs cert_id='%s' (len=%zu) "
               "sec_sign_len=%zu",
               cert_id.c_str(), cert_id.size(), sec_sign.size());
-    if (!cert_id.empty())  hdrs["x-bbl-app-certification-id"] = cert_id;
-    if (!sec_sign.empty()) hdrs["x-bbl-device-security-sign"] = sec_sign;
-    req.headers   = std::move(hdrs);
+    if (!cert_id.empty())
+        hdrs.emplace_back("x-bbl-app-certification-id", cert_id);
+    if (!sec_sign.empty())
+        hdrs.emplace_back("x-bbl-device-security-sign", sec_sign);
+    req.ordered_headers = std::move(hdrs);
     req.body      = body;
     req.timeout_s = 60;
 

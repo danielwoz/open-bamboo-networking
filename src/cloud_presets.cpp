@@ -2,6 +2,7 @@
 
 #include "obn/agent.hpp"
 #include "obn/bambu_networking.hpp"
+#include "obn/bbl_identity.hpp"
 #include "obn/cloud_auth.hpp"
 #include "obn/http_client.hpp"
 #include "obn/json_lite.hpp"
@@ -264,11 +265,13 @@ int list(Agent* a, const std::string& bundle_version, std::vector<Meta>* out)
     out->clear();
 
     auto hdrs = a->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (obn::bbl::as_map(hdrs).count("Authorization") == 0) {
         return BAMBU_NETWORK_ERR_GET_SETTING_LIST_FAILED;
     }
     // GET doesn't need Content-Type; some backends 415 if present.
-    hdrs.erase("Content-Type");
+    hdrs.erase(std::remove_if(hdrs.begin(), hdrs.end(),
+                              [](const auto& kv) { return kv.first == "Content-Type"; }),
+               hdrs.end());
 
     std::string url = settings_base(a) + "?public=false";
     if (!bundle_version.empty()) {
@@ -324,9 +327,11 @@ int get_full(Agent* a,
         return BAMBU_NETWORK_ERR_INVALID_HANDLE;
 
     auto hdrs = a->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end())
+    if (obn::bbl::as_map(hdrs).count("Authorization") == 0)
         return BAMBU_NETWORK_ERR_GET_SETTING_LIST_FAILED;
-    hdrs.erase("Content-Type");
+    hdrs.erase(std::remove_if(hdrs.begin(), hdrs.end(),
+                              [](const auto& kv) { return kv.first == "Content-Type"; }),
+               hdrs.end());
 
     const std::string url = settings_base(a) + "/"
                           + obn::http::url_encode(setting_id);
@@ -360,7 +365,7 @@ std::string create(Agent*                              a,
     if (!a) return {};
 
     auto hdrs = a->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (obn::bbl::as_map(hdrs).count("Authorization") == 0) {
         OBN_WARN("cloud_presets::create: not logged in");
         return {};
     }
@@ -396,7 +401,7 @@ int update(Agent*                              a,
     if (!a || setting_id.empty()) return BAMBU_NETWORK_ERR_PUT_SETTING_FAILED;
 
     auto hdrs = a->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (obn::bbl::as_map(hdrs).count("Authorization") == 0) {
         OBN_WARN("cloud_presets::update: not logged in");
         return BAMBU_NETWORK_ERR_PUT_SETTING_FAILED;
     }
@@ -406,7 +411,7 @@ int update(Agent*                              a,
     req.method  = obn::http::Method::PATCH;
     req.url     = settings_base(a) + "/" + obn::http::url_encode(setting_id);
     req.body    = body;
-    req.headers = hdrs;
+    req.ordered_headers = hdrs;
     auto resp   = obn::http::perform(req);
     if (http_code) *http_code = static_cast<unsigned int>(resp.status_code);
     OBN_INFO("cloud_presets::update id=%s http=%ld bytes=%zu",
@@ -431,16 +436,18 @@ int del(Agent* a, const std::string& setting_id)
     if (!a || setting_id.empty()) return BAMBU_NETWORK_ERR_DEL_SETTING_FAILED;
 
     auto hdrs = a->cloud_api_http_headers();
-    if (hdrs.find("Authorization") == hdrs.end()) {
+    if (obn::bbl::as_map(hdrs).count("Authorization") == 0) {
         OBN_WARN("cloud_presets::del: not logged in");
         return BAMBU_NETWORK_ERR_DEL_SETTING_FAILED;
     }
-    hdrs.erase("Content-Type");
+    hdrs.erase(std::remove_if(hdrs.begin(), hdrs.end(),
+                              [](const auto& kv) { return kv.first == "Content-Type"; }),
+               hdrs.end());
 
     obn::http::Request req;
     req.method  = obn::http::Method::DEL;
     req.url     = settings_base(a) + "/" + obn::http::url_encode(setting_id);
-    req.headers = hdrs;
+    req.ordered_headers = hdrs;
     auto resp   = obn::http::perform(req);
     OBN_INFO("cloud_presets::del id=%s http=%ld", setting_id.c_str(), resp.status_code);
 
