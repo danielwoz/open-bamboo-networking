@@ -15,6 +15,9 @@
 #include <string>
 #include <vector>
 
+#include <stdlib.h>   // mkdtemp, setenv (POSIX; macOS needs the C headers)
+#include <unistd.h>
+
 #define CHECK(cond) do {                                                    \
     if (!(cond)) {                                                          \
         std::cerr << "FAIL " << __FILE__ << ":" << __LINE__                 \

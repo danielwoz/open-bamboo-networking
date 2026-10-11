@@ -214,7 +214,8 @@ jobs:
   build-macos:
     name: v${{ matrix.abi }}.xx-macos-${{ matrix.arch }}
     needs: [preflight]
-    runs-on: ${{ matrix.arch == 'arm64' && 'macos-latest' || 'macos-latest-large' }}
+    # Intel x64 runs on the free macos-13 image; the fork has no macos-latest-large.
+    runs-on: ${{ matrix.arch == 'arm64' && 'macos-latest' || 'macos-13' }}
     env:
       OBN_SLICER_KEY_PEM: ${{ secrets.OBN_SLICER_KEY_PEM }}
       OBN_SLICER_CERT_PEM: ${{ secrets.OBN_SLICER_CERT_PEM }}
