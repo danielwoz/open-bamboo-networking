@@ -27,6 +27,7 @@
 #include "obn/print_params_ftp_prefs.hpp"
 #include "obn/signing.hpp"
 #include "obn/ssdp.hpp"
+#include "obn/studio_session.hpp"
 #include "obn/lan_tls.hpp"
 
 #include <openssl/evp.h>
@@ -2258,6 +2259,14 @@ void Agent::set_config_dir(std::string dir)
         auth_store_ = std::make_unique<obn::auth::Store>(
             obn::config::path_in_dir("obn.auth.json"));
         auth_store_->load();
+        // When we have no session of our own, adopt the one Bambu Studio
+        // already stored (decrypted from BambuNetworkEngine.conf), so a user
+        // logged in through Studio does not have to log in again here.
+        if (obn::config::current().import_studio_session &&
+            !auth_store_->snapshot().logged_in()) {
+            if (auto imported = obn::studio_session::import_from_studio_conf(cfg))
+                auth_store_->set(std::move(*imported));
+        }
         hydrate_session();
 
         const std::string state_path =

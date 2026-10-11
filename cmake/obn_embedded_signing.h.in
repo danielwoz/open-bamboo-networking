@@ -1,0 +1,30 @@
+#pragma once
+
+// Build-time-embedded slicer signing material, so a build can sign cloud/MQTT
+// requests (and install the app cert on a secured printer) without the
+// slicer_key.pem / slicer_cert.pem / slicer_crl.pem files present in the
+// config directory at runtime. Populated from the OBN_SLICER_KEY_PEM /
+// OBN_SLICER_CERT_PEM / OBN_SLICER_CRL_PEM / OBN_SLICER_CERT_ID / OBN_AES_KEY
+// environment variables at configure time (see CMakeLists.txt). Each is empty
+// by default, which preserves the normal load-from-config-dir behavior for
+// anyone who does not set them.
+//
+// cert_id (MQTT header + HTTP x-bbl-app-certification-id) is normally derived
+// from the leaf of the embedded cert chain. When only the private key and the
+// cert_id string are available (no full chain), kSlicerCertId supplies the
+// cert_id directly; the chain PEM and CRL are needed only to additionally
+// install the app cert on a secured printer.
+
+namespace obn::signing::embedded {
+
+inline constexpr char kSlicerKeyPem[]  = R"obn(@OBN_EMBEDDED_SLICER_KEY_PEM@)obn";
+inline constexpr char kSlicerCertPem[] = R"obn(@OBN_EMBEDDED_SLICER_CERT_PEM@)obn";
+inline constexpr char kSlicerCrlPem[]  = R"obn(@OBN_EMBEDDED_SLICER_CRL_PEM@)obn";
+inline constexpr char kSlicerCertId[]  = "@OBN_EMBEDDED_SLICER_CERT_ID@";
+
+// Symmetric key (16-byte AES-128, raw or 32-hex) used to decrypt Bambu
+// Studio's BambuNetworkEngine.conf when importing an existing login. See
+// src/studio_session.cpp.
+inline constexpr char kAesKey[]        = "@OBN_EMBEDDED_AES_KEY@";
+
+} // namespace obn::signing::embedded

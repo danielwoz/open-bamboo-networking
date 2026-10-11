@@ -47,6 +47,11 @@ struct Settings {
     // When true, get_user_tasks returns an empty history envelope.
     bool cloud_hide_history       = false;
 
+    // Import an existing Bambu Studio cloud login (decrypt its
+    // BambuNetworkEngine.conf) when this plugin has no session of its own, so
+    // the user need not log in twice. See src/studio_session.cpp.
+    bool import_studio_session    = true;
+
     // Ask each freshly subscribed cloud device for a full status snapshot
     // (pushing.pushall) once per session instead of waiting for the printer
     // to volunteer telemetry.

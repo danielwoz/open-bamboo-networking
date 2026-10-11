@@ -69,6 +69,11 @@ jobs:
     name: v${{ matrix.abi }}.xx-linux-${{ matrix.arch }}
     needs: [preflight]
     runs-on: ${{ matrix.arch == 'x64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
+    env:
+      OBN_SLICER_KEY_PEM: ${{ secrets.OBN_SLICER_KEY_PEM }}
+      OBN_SLICER_CERT_PEM: ${{ secrets.OBN_SLICER_CERT_PEM }}
+      OBN_SLICER_CRL_PEM: ${{ secrets.OBN_SLICER_CRL_PEM }}
+      OBN_AES_KEY: ${{ secrets.OBN_AES_KEY }}
     strategy:
       fail-fast: false
       matrix:
@@ -127,6 +132,11 @@ jobs:
     name: v${{ matrix.abi }}.xx-windows-${{ matrix.arch }}
     needs: [preflight]
     runs-on: ${{ matrix.arch == 'arm64' && 'windows-11-arm' || 'windows-2022' }}
+    env:
+      OBN_SLICER_KEY_PEM: ${{ secrets.OBN_SLICER_KEY_PEM }}
+      OBN_SLICER_CERT_PEM: ${{ secrets.OBN_SLICER_CERT_PEM }}
+      OBN_SLICER_CRL_PEM: ${{ secrets.OBN_SLICER_CRL_PEM }}
+      OBN_AES_KEY: ${{ secrets.OBN_AES_KEY }}
     strategy:
       fail-fast: false
       matrix:
@@ -205,6 +215,11 @@ jobs:
     name: v${{ matrix.abi }}.xx-macos-${{ matrix.arch }}
     needs: [preflight]
     runs-on: ${{ matrix.arch == 'arm64' && 'macos-latest' || 'macos-latest-large' }}
+    env:
+      OBN_SLICER_KEY_PEM: ${{ secrets.OBN_SLICER_KEY_PEM }}
+      OBN_SLICER_CERT_PEM: ${{ secrets.OBN_SLICER_CERT_PEM }}
+      OBN_SLICER_CRL_PEM: ${{ secrets.OBN_SLICER_CRL_PEM }}
+      OBN_AES_KEY: ${{ secrets.OBN_AES_KEY }}
     strategy:
       fail-fast: false
       matrix:

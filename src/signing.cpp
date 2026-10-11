@@ -8,6 +8,11 @@
 #include "obn/json_lite.hpp"
 #include "obn/log.hpp"
 
+// Build-time-embedded signing material (empty unless OBN_SLICER_*_PEM were set
+// at configure time); the resolvers below fall back to it when no on-disk PEM
+// is present. See cmake/obn_embedded_signing.h.in.
+#include "obn_embedded_signing.h"
+
 #include <openssl/bio.h>
 #include <openssl/bn.h>
 #include <openssl/err.h>
@@ -63,20 +68,75 @@ static std::string read_pem_file(const std::string& path)
     return out;
 }
 
+// cert_id string (`<serial_hex><issuer_dn>`) from config_dir/slicer_cert_id.txt,
+// then the build-time-embedded value. Used only when no cert chain is present
+// to derive it from. "" when neither is set.
+static std::string resolve_cert_id_string()
+{
+    std::string path = obn::config::path_in_dir("slicer_cert_id.txt");
+    if (!path.empty()) {
+        std::FILE* f = std::fopen(path.c_str(), "r");
+        if (f) {
+            char buf[256] = {};
+            if (!std::fgets(buf, sizeof(buf), f)) buf[0] = '\0';
+            std::fclose(f);
+            std::string s(buf);
+            while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' '))
+                s.pop_back();
+            if (!s.empty()) return s;
+        }
+    }
+    if (embedded::kSlicerCertId[0] != '\0')
+        return embedded::kSlicerCertId;
+    return {};
+}
+
+// Convert a stored cert_id (`<serial_hex><issuer_dn>`, e.g.
+// `a4e8faaa…192383fCN=GLOF3813734089.bambulab.com`) into the HTTP-header form
+// `<issuer_dn>:<serial_lower>`. The serial is lowercase hex that can end in a
+// hex letter (…192383f); the issuer's leading RDN type is uppercase (CN, O, …).
+// Walking back from the first '=' over UPPERCASE letters only keeps the
+// uppercase RDN type with the issuer and leaves a trailing a–f on the serial,
+// which a naive isalpha/longest-hex split would get wrong (cloud 403).
+static std::string http_form_from_cert_id(const std::string& raw)
+{
+    if (raw.empty()) return {};
+    const auto eq = raw.find('=');
+    if (eq == std::string::npos) return {};
+    std::size_t issuer_start = eq;
+    while (issuer_start > 0 &&
+           std::isupper(static_cast<unsigned char>(raw[issuer_start - 1])))
+        --issuer_start;
+    if (issuer_start == 0) return {};
+    std::string serial = raw.substr(0, issuer_start);
+    std::string issuer = raw.substr(issuer_start);
+    for (char& c : serial)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return issuer + ":" + serial;
+}
+
 } // namespace
 
 std::string slicer_cert_pem()
 {
     const auto& cfg = obn::config::current().slicer_cert_pem;
-    return read_pem_file(cfg.empty() ? obn::config::path_in_dir("slicer_cert.pem")
-                                     : cfg);
+    std::string pem = read_pem_file(cfg.empty()
+                                        ? obn::config::path_in_dir("slicer_cert.pem")
+                                        : cfg);
+    if (pem.empty() && embedded::kSlicerCertPem[0] != '\0')
+        pem = embedded::kSlicerCertPem;
+    return pem;
 }
 
 std::string slicer_crl_pem()
 {
     const auto& cfg = obn::config::current().slicer_crl_pem;
-    return read_pem_file(cfg.empty() ? obn::config::path_in_dir("slicer_crl.pem")
-                                     : cfg);
+    std::string pem = read_pem_file(cfg.empty()
+                                        ? obn::config::path_in_dir("slicer_crl.pem")
+                                        : cfg);
+    if (pem.empty() && embedded::kSlicerCrlPem[0] != '\0')
+        pem = embedded::kSlicerCrlPem;
+    return pem;
 }
 
 namespace {
@@ -139,14 +199,24 @@ struct AppCertIds {
 static const AppCertIds& app_cert_ids()
 {
     static const AppCertIds ids = []() -> AppCertIds {
-        auto cert = load_slicer_leaf_cert();
-        if (!cert) return {};
-        const std::string serial = leaf_serial_hex_lower(cert.get());
-        const std::string issuer = leaf_issuer_rfc2253(cert.get());
-        if (serial.empty() || issuer.empty()) return {};
+        // Preferred: derive from the leaf of the app cert chain.
+        if (auto cert = load_slicer_leaf_cert()) {
+            const std::string serial = leaf_serial_hex_lower(cert.get());
+            const std::string issuer = leaf_issuer_rfc2253(cert.get());
+            if (!serial.empty() && !issuer.empty()) {
+                AppCertIds out;
+                out.mqtt = serial + issuer;
+                out.http = issuer + ":" + serial;
+                return out;
+            }
+        }
+        // Fallback when no chain is present: use the stored cert_id string
+        // (slicer_cert_id.txt or the embedded value) and split it for HTTP.
+        const std::string raw = resolve_cert_id_string();
+        if (raw.empty()) return {};
         AppCertIds out;
-        out.mqtt = serial + issuer;
-        out.http = issuer + ":" + serial;
+        out.mqtt = raw;
+        out.http = http_form_from_cert_id(raw);
         return out;
     }();
     return ids;
@@ -171,18 +241,34 @@ const std::string& app_certification_id()
 
 namespace {
 
+// Parses a PEM private key from an in-memory buffer (the build-time-embedded
+// fallback), as opposed to load_pkey()'s on-disk PEM_read_PrivateKey.
+static std::unique_ptr<EVP_PKEY, PkeyDel> load_pkey_from_memory(const char* pem)
+{
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(
+        BIO_new_mem_buf(pem, -1), &BIO_free);
+    if (!bio) return nullptr;
+    EVP_PKEY* raw = PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr);
+    return std::unique_ptr<EVP_PKEY, PkeyDel>(raw);
+}
+
 static std::unique_ptr<EVP_PKEY, PkeyDel> load_pkey()
 {
     std::string path = resolve_key_path();
-    if (path.empty()) return nullptr;
-
-    std::FILE* f = std::fopen(path.c_str(), "r");
-    if (!f) return nullptr;
-
-    EVP_PKEY* raw = PEM_read_PrivateKey(f, nullptr, nullptr, nullptr);
-    std::fclose(f);
-
-    return std::unique_ptr<EVP_PKEY, PkeyDel>(raw);
+    if (!path.empty()) {
+        std::FILE* f = std::fopen(path.c_str(), "r");
+        if (f) {
+            EVP_PKEY* raw = PEM_read_PrivateKey(f, nullptr, nullptr, nullptr);
+            std::fclose(f);
+            if (raw) return std::unique_ptr<EVP_PKEY, PkeyDel>(raw);
+        }
+    }
+    // Fall back to the build-time-embedded key when no on-disk key loaded
+    // (file missing, or OBN_SLICER_KEY_PEM was never set -- the latter makes
+    // this a no-op, since kSlicerKeyPem is then an empty string).
+    if (embedded::kSlicerKeyPem[0] != '\0')
+        return load_pkey_from_memory(embedded::kSlicerKeyPem);
+    return nullptr;
 }
 
 EVP_PKEY* slicer_pkey()

@@ -98,6 +98,31 @@ configure_file(
     "${OBN_GENERATED_DIR}/obn_conf_default.h"
     @ONLY)
 
+# Optional build-time-embedded signing material (see
+# cmake/obn_embedded_signing.h.in). Sourced from the environment, never from a
+# CMake cache entry, so the values never land in CMakeCache.txt. All empty by
+# default, which preserves the normal load-from-config-dir behavior.
+#
+# string(STRIP) trims a trailing newline some secret stores preserve verbatim
+# (e.g. `gh secret set X < file`) -- left in the plain-quoted kAesKey literal
+# it would break the build with "newline in constant". It only trims
+# leading/trailing whitespace, never the internal line breaks PEM parsing
+# needs, so it is safe for the PEM blocks too.
+set(OBN_EMBEDDED_SLICER_KEY_PEM  "$ENV{OBN_SLICER_KEY_PEM}")
+set(OBN_EMBEDDED_SLICER_CERT_PEM "$ENV{OBN_SLICER_CERT_PEM}")
+set(OBN_EMBEDDED_SLICER_CRL_PEM  "$ENV{OBN_SLICER_CRL_PEM}")
+set(OBN_EMBEDDED_SLICER_CERT_ID  "$ENV{OBN_SLICER_CERT_ID}")
+set(OBN_EMBEDDED_AES_KEY         "$ENV{OBN_AES_KEY}")
+string(STRIP "${OBN_EMBEDDED_SLICER_KEY_PEM}"  OBN_EMBEDDED_SLICER_KEY_PEM)
+string(STRIP "${OBN_EMBEDDED_SLICER_CERT_PEM}" OBN_EMBEDDED_SLICER_CERT_PEM)
+string(STRIP "${OBN_EMBEDDED_SLICER_CRL_PEM}"  OBN_EMBEDDED_SLICER_CRL_PEM)
+string(STRIP "${OBN_EMBEDDED_SLICER_CERT_ID}"  OBN_EMBEDDED_SLICER_CERT_ID)
+string(STRIP "${OBN_EMBEDDED_AES_KEY}"         OBN_EMBEDDED_AES_KEY)
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/obn_embedded_signing.h.in"
+    "${OBN_GENERATED_DIR}/obn_embedded_signing.h"
+    @ONLY)
+
 # Compile in a standard root CA bundle (see include/obn/cloud_ca_bundle.hpp
 # for why: Windows has no usable default trust store for mosquitto/OpenSSL
 # to validate the cloud MQTT broker against). Linux/macOS use the system
@@ -407,6 +432,7 @@ add_library(bambu_networking SHARED
     src/state.cpp
     src/print_job_naming.cpp
     src/signing.cpp
+    src/studio_session.cpp
     src/ssdp.cpp
     src/tunnel_local.cpp
     src/tunnel_upload.cpp
@@ -892,6 +918,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
 
     add_executable(lan_live_test tests/lan_live_test.cpp
         src/agent.cpp
+        src/studio_session.cpp
         src/auth.cpp
         src/camera_url.cpp
         src/cert_store.cpp
@@ -946,6 +973,20 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     target_link_libraries(signing_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
     add_test(NAME signing COMMAND signing_test)
 
+    # Hermetic unit test for obn::studio_session — builds its own encrypted
+    # BambuNetworkEngine.conf with a known key; no real credentials required.
+    add_executable(studio_session_test tests/studio_session_test.cpp
+        src/studio_session.cpp
+        src/json_lite.cpp
+        src/log.cpp
+        src/os_compat.cpp)
+    target_include_directories(studio_session_test PRIVATE include ${OBN_GENERATED_DIR})
+    target_compile_definitions(studio_session_test PRIVATE
+        OBN_VERSION_STRING="${OBN_VERSION}"
+        ABI_VERSION=${OBN_ABI_VERSION_HEX})
+    target_link_libraries(studio_session_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    add_test(NAME studio_session COMMAND studio_session_test)
+
     add_executable(cert_store_test tests/cert_store_test.cpp
         tests/config_stub.cpp
         src/cert_store.cpp
@@ -983,6 +1024,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     # whole core has to be linked in.
     set(OBN_TEST_CORE_SOURCES
         src/agent.cpp
+        src/studio_session.cpp
         src/auth.cpp
         src/camera_url.cpp
         src/cert_store.cpp

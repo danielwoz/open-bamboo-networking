@@ -253,6 +253,14 @@ cloud_print = cloud_only
 
 cloud_hide_history = 0
 
+# Reuse an existing Bambu Studio cloud login. When this plugin has no stored
+# session of its own, it decrypts Bambu Studio's BambuNetworkEngine.conf (with
+# network_engine.key, or the key embedded at build time) and adopts that
+# session, so a user already logged in through Bambu Studio is not asked to log
+# in again. Set to 0 to always require a separate login.
+
+import_studio_session = 1
+
 # Server addresses (Global region — used when country is not China).
 
 cloud_global_api_host = https://api.bambulab.com
