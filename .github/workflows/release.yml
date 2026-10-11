@@ -216,8 +216,9 @@ jobs:
   build-macos:
     name: v${{ matrix.abi }}.xx-macos-${{ matrix.arch }}
     needs: [preflight]
-    # Intel x64 runs on the free macos-13 image; the fork has no macos-latest-large.
-    runs-on: ${{ matrix.arch == 'arm64' && 'macos-latest' || 'macos-13' }}
+    # Apple Silicon only: the fork has no Intel macOS runner (macos-latest-large
+    # needs a larger-runner plan, and macos-13 never gets scheduled here).
+    runs-on: macos-latest
     env:
       OBN_SLICER_KEY_PEM: ${{ secrets.OBN_SLICER_KEY_PEM }}
       OBN_SLICER_CERT_PEM: ${{ secrets.OBN_SLICER_CERT_PEM }}
@@ -230,7 +231,6 @@ jobs:
         abi: ${{ fromJSON(needs.preflight.outputs.abi-matrix) }}
         arch:
           - arm64
-          - x64
 
     steps:
       - name: Checkout
