@@ -74,6 +74,7 @@ jobs:
       OBN_SLICER_CERT_PEM: ${{ secrets.OBN_SLICER_CERT_PEM }}
       OBN_SLICER_CRL_PEM: ${{ secrets.OBN_SLICER_CRL_PEM }}
       OBN_AES_KEY: ${{ secrets.OBN_AES_KEY }}
+      OBN_BBL_APP_IDENTITY: ${{ secrets.OBN_BBL_APP_IDENTITY }}
     strategy:
       fail-fast: false
       matrix:
@@ -137,6 +138,7 @@ jobs:
       OBN_SLICER_CERT_PEM: ${{ secrets.OBN_SLICER_CERT_PEM }}
       OBN_SLICER_CRL_PEM: ${{ secrets.OBN_SLICER_CRL_PEM }}
       OBN_AES_KEY: ${{ secrets.OBN_AES_KEY }}
+      OBN_BBL_APP_IDENTITY: ${{ secrets.OBN_BBL_APP_IDENTITY }}
     strategy:
       fail-fast: false
       matrix:
@@ -221,6 +223,7 @@ jobs:
       OBN_SLICER_CERT_PEM: ${{ secrets.OBN_SLICER_CERT_PEM }}
       OBN_SLICER_CRL_PEM: ${{ secrets.OBN_SLICER_CRL_PEM }}
       OBN_AES_KEY: ${{ secrets.OBN_AES_KEY }}
+      OBN_BBL_APP_IDENTITY: ${{ secrets.OBN_BBL_APP_IDENTITY }}
     strategy:
       fail-fast: false
       matrix:

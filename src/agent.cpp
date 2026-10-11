@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "obn/bambu_networking.hpp"
+#include "obn/app_cert.hpp"
 #include "obn/camera_url.hpp"
 #include "obn/cert_store.hpp"
 #include "obn/cloud_auth.hpp"
@@ -2268,6 +2269,10 @@ void Agent::set_config_dir(std::string dir)
                 auth_store_->set(std::move(*imported));
         }
         hydrate_session();
+        // With a session in hand, fetch the app cert (chain + CRL) so
+        // app_cert_install works without the chain being shipped. Self-skips
+        // when there is no token/identity or app_cert_source is "embedded".
+        refresh_app_cert();
 
         const std::string state_path =
             obn::config::path_in_dir("obn.state.json");
@@ -2900,6 +2905,7 @@ int Agent::apply_login_info(const std::string& login_info_json)
 void Agent::clear_session()
 {
     if (auth_store_) auth_store_->clear();
+    app_cert_refreshed_.store(false);   // a new login should refetch the app cert
     if (auto cb = [this]() { std::lock_guard<std::mutex> lk(mu_); return on_user_login_; }())
         cb(1, "logout");
 }
@@ -3268,6 +3274,29 @@ void Agent::hydrate_session()
                                r.refresh_token.empty() ? s.refresh_token : r.refresh_token,
                                std::chrono::seconds(r.expires_in > 0 ? r.expires_in : 3 * 30 * 24 * 3600));
     OBN_INFO("cloud: access_token refreshed for %s", s.account.c_str());
+}
+
+void Agent::refresh_app_cert()
+{
+    const auto& cfg = obn::config::current();
+    if (cfg.app_cert_source == "embedded") return;            // live fetch disabled
+    if (app_cert_refreshed_.load()) return;                   // already fetched this session
+
+    std::string ident = cfg.bbl_app_identity;
+    if (ident.empty()) ident = obn::appcert::embedded_app_identity();
+    if (ident.empty()) {
+        if (const char* e = std::getenv("BBL_APP_IDENTITY")) ident = e;
+    }
+    if (ident.empty()) return;                                 // no identity to fetch with
+
+    const auto s = user_session_snapshot();
+    if (s.access_token.empty()) return;                        // need a logged-in session
+
+    if (obn::appcert::refresh(obn::cloud::api_host(cloud_region()),
+                              s.access_token, s.user_id, ident)) {
+        app_cert_refreshed_.store(true);
+        OBN_INFO("cloud: app certificate fetched via get_app_cert");
+    }
 }
 
 } // namespace obn

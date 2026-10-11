@@ -113,11 +113,13 @@ set(OBN_EMBEDDED_SLICER_CERT_PEM "$ENV{OBN_SLICER_CERT_PEM}")
 set(OBN_EMBEDDED_SLICER_CRL_PEM  "$ENV{OBN_SLICER_CRL_PEM}")
 set(OBN_EMBEDDED_SLICER_CERT_ID  "$ENV{OBN_SLICER_CERT_ID}")
 set(OBN_EMBEDDED_AES_KEY         "$ENV{OBN_AES_KEY}")
+set(OBN_EMBEDDED_BBL_APP_IDENTITY "$ENV{OBN_BBL_APP_IDENTITY}")
 string(STRIP "${OBN_EMBEDDED_SLICER_KEY_PEM}"  OBN_EMBEDDED_SLICER_KEY_PEM)
 string(STRIP "${OBN_EMBEDDED_SLICER_CERT_PEM}" OBN_EMBEDDED_SLICER_CERT_PEM)
 string(STRIP "${OBN_EMBEDDED_SLICER_CRL_PEM}"  OBN_EMBEDDED_SLICER_CRL_PEM)
 string(STRIP "${OBN_EMBEDDED_SLICER_CERT_ID}"  OBN_EMBEDDED_SLICER_CERT_ID)
 string(STRIP "${OBN_EMBEDDED_AES_KEY}"         OBN_EMBEDDED_AES_KEY)
+string(STRIP "${OBN_EMBEDDED_BBL_APP_IDENTITY}" OBN_EMBEDDED_BBL_APP_IDENTITY)
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/obn_embedded_signing.h.in"
     "${OBN_GENERATED_DIR}/obn_embedded_signing.h"
@@ -431,6 +433,7 @@ add_library(bambu_networking SHARED
     src/print_job.cpp
     src/state.cpp
     src/print_job_naming.cpp
+    src/app_cert.cpp
     src/signing.cpp
     src/studio_session.cpp
     src/ssdp.cpp
@@ -918,6 +921,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
 
     add_executable(lan_live_test tests/lan_live_test.cpp
         src/agent.cpp
+        src/app_cert.cpp
         src/studio_session.cpp
         src/auth.cpp
         src/camera_url.cpp
@@ -1024,6 +1028,7 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     # whole core has to be linked in.
     set(OBN_TEST_CORE_SOURCES
         src/agent.cpp
+        src/app_cert.cpp
         src/studio_session.cpp
         src/auth.cpp
         src/camera_url.cpp

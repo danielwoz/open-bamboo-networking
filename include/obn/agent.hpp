@@ -372,6 +372,12 @@ public:
     // valid Bearer. Called on Agent construction.
     void hydrate_session();
 
+    // Fetch the app certificate (chain + CRL) live via get_app_cert and cache
+    // it, when app_cert_source allows and a session + app_identity are
+    // available. No-op (self-skipping) otherwise, and a no-op once a live cert
+    // is already cached. See src/app_cert.cpp.
+    void refresh_app_cert();
+
     bool        user_logged_in() const;
     obn::auth::Session user_session_snapshot() const
     {
@@ -655,6 +661,10 @@ private:
     // install_device_cert() ~1 Hz, and we don't want to pound the printer
     // with a fresh TLS handshake every tick.
     std::set<std::string> certified_devs_;
+    // Set once get_app_cert has fetched the app cert this session, so
+    // refresh_app_cert() (called from update_cert ~repeatedly) fetches once.
+    // Reset in clear_session() so a new login refetches.
+    std::atomic<bool> app_cert_refreshed_{false};
     // Devices whose app_cert_install got result=SUCCESS (+ printer_cert)
     // this MQTT session. Set in harvest_security_report, not at publish.
     // Cleared on LAN disconnect so Studio can re-provision. Guarded by mu_.

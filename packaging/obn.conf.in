@@ -261,6 +261,20 @@ cloud_hide_history = 0
 
 import_studio_session = 1
 
+# Where the app certificate (chain + CRL — needed to install the app cert on a
+# secured printer and to sign cloud requests) comes from:
+#   auto      fetch it live from the cloud (get_app_cert), fall back to the
+#             build-time-embedded / config copy if the fetch fails. Default.
+#   live      use only the live get_app_cert fetch.
+#   embedded  use only the embedded / config copy (no live fetch).
+
+app_cert_source = auto
+
+# App identity ("<appCertCN><appKeyToken>") the live get_app_cert fetch sends.
+# Empty = use the value embedded at build time (if any).
+
+bbl_app_identity =
+
 # Server addresses (Global region — used when country is not China).
 
 cloud_global_api_host = https://api.bambulab.com

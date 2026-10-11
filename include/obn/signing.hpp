@@ -72,13 +72,18 @@ std::string base64_encode(const unsigned char* data, std::size_t len);
 // Derived from the leaf of slicer_cert.pem:
 //   lowercase_hex(serial) + issuer_RFC2253  (no separator).
 // Returns empty string when the cert is absent or unparseable.
-const std::string& slicer_cert_id();
+std::string slicer_cert_id();
 
 // Returns the value for the HTTP `x-bbl-app-certification-id` header used on
 // secured-printer REST writes (e.g. POST /my/task). DIFFERENT serialization
 // from slicer_cert_id(): `issuer_RFC2253 + ":" + serial.lower()`, from the
 // same leaf. Returns "" when the cert is absent or unparseable.
-const std::string& app_certification_id();
+std::string app_certification_id();
+
+// Install a runtime app cert + CRL (fetched live via get_app_cert). Once set,
+// slicer_cert_pem()/slicer_crl_pem() return it (per app_cert_source) and the
+// cert_id is recomputed from it. Thread-safe.
+void set_runtime_app_cert(const std::string& cert_pem, const std::string& crl);
 
 // PEM chain of the slicer (app) certificate matching slicer_key.pem, read
 // from config_dir/slicer_cert.pem (or obn.conf slicer_cert_pem). Source of

@@ -27,4 +27,9 @@ inline constexpr char kSlicerCertId[]  = "@OBN_EMBEDDED_SLICER_CERT_ID@";
 // src/studio_session.cpp.
 inline constexpr char kAesKey[]        = "@OBN_EMBEDDED_AES_KEY@";
 
+// App identity ("<appCertCN><appKeyToken>") for the live get_app_cert fetch
+// (src/app_cert.cpp). Lets the plugin fetch the app cert chain + CRL at
+// runtime instead of embedding them. Empty = no live fetch.
+inline constexpr char kBblAppIdentity[] = "@OBN_EMBEDDED_BBL_APP_IDENTITY@";
+
 } // namespace obn::signing::embedded

@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -42,6 +43,22 @@ struct BnDel   { void operator()(BIGNUM*       p) const { BN_free(p); } };
 
 static constexpr const char kSignAlg[] = "RSA_SHA256";
 static constexpr const char kSignVer[] = "v1.0";
+
+// Runtime app cert + CRL pushed in by the live get_app_cert path
+// (obn::appcert::refresh -> set_runtime_app_cert). Empty until fetched.
+std::mutex  g_runtime_cert_mu;
+std::string g_runtime_cert_pem;
+std::string g_runtime_crl_pem;
+static std::string runtime_app_cert_pem()
+{
+    std::lock_guard<std::mutex> lk(g_runtime_cert_mu);
+    return g_runtime_cert_pem;
+}
+static std::string runtime_app_crl_pem()
+{
+    std::lock_guard<std::mutex> lk(g_runtime_cert_mu);
+    return g_runtime_crl_pem;
+}
 
 // Resolve the key file path: obn.conf slicer_key_pem, or
 // config_dir/slicer_key.pem when empty.
@@ -117,15 +134,32 @@ static std::string http_form_from_cert_id(const std::string& raw)
 
 } // namespace
 
+void set_runtime_app_cert(const std::string& cert_pem, const std::string& crl)
+{
+    std::lock_guard<std::mutex> lk(g_runtime_cert_mu);
+    g_runtime_cert_pem = cert_pem;
+    g_runtime_crl_pem  = crl;
+}
+
 std::string slicer_cert_pem()
 {
+    // Explicit obn.conf path / config_dir file always wins.
     const auto& cfg = obn::config::current().slicer_cert_pem;
     std::string pem = read_pem_file(cfg.empty()
                                         ? obn::config::path_in_dir("slicer_cert.pem")
                                         : cfg);
-    if (pem.empty() && embedded::kSlicerCertPem[0] != '\0')
-        pem = embedded::kSlicerCertPem;
-    return pem;
+    if (!pem.empty()) return pem;
+
+    // Otherwise follow app_cert_source: live get_app_cert result, then the
+    // build-time-embedded copy.
+    const std::string& src = obn::config::current().app_cert_source;
+    if (src != "embedded") {
+        std::string live = runtime_app_cert_pem();
+        if (!live.empty()) return live;
+    }
+    if (src != "live" && embedded::kSlicerCertPem[0] != '\0')
+        return embedded::kSlicerCertPem;
+    return {};
 }
 
 std::string slicer_crl_pem()
@@ -134,9 +168,16 @@ std::string slicer_crl_pem()
     std::string pem = read_pem_file(cfg.empty()
                                         ? obn::config::path_in_dir("slicer_crl.pem")
                                         : cfg);
-    if (pem.empty() && embedded::kSlicerCrlPem[0] != '\0')
-        pem = embedded::kSlicerCrlPem;
-    return pem;
+    if (!pem.empty()) return pem;
+
+    const std::string& src = obn::config::current().app_cert_source;
+    if (src != "embedded") {
+        std::string live = runtime_app_crl_pem();
+        if (!live.empty()) return live;
+    }
+    if (src != "live" && embedded::kSlicerCrlPem[0] != '\0')
+        return embedded::kSlicerCrlPem;
+    return {};
 }
 
 namespace {
@@ -190,51 +231,56 @@ static std::string leaf_issuer_rfc2253(X509* cert)
     return issuer;
 }
 
-// Parsed once: MQTT cert_id = serial+issuer; HTTP = issuer:serial.
+// MQTT cert_id = serial+issuer; HTTP = issuer:serial.
 struct AppCertIds {
     std::string mqtt;
     std::string http;
 };
 
-static const AppCertIds& app_cert_ids()
+static AppCertIds compute_app_cert_ids()
 {
-    static const AppCertIds ids = []() -> AppCertIds {
-        // Preferred: derive from the leaf of the app cert chain.
-        if (auto cert = load_slicer_leaf_cert()) {
-            const std::string serial = leaf_serial_hex_lower(cert.get());
-            const std::string issuer = leaf_issuer_rfc2253(cert.get());
-            if (!serial.empty() && !issuer.empty()) {
-                AppCertIds out;
-                out.mqtt = serial + issuer;
-                out.http = issuer + ":" + serial;
-                return out;
-            }
-        }
-        // Fallback when no chain is present: use the stored cert_id string
-        // (slicer_cert_id.txt or the embedded value) and split it for HTTP.
-        const std::string raw = resolve_cert_id_string();
-        if (raw.empty()) return {};
-        AppCertIds out;
-        out.mqtt = raw;
-        out.http = http_form_from_cert_id(raw);
-        return out;
-    }();
-    return ids;
+    // Preferred: derive from the leaf of the app cert chain (file, live
+    // get_app_cert, or embedded — see slicer_cert_pem()).
+    if (auto cert = load_slicer_leaf_cert()) {
+        const std::string serial = leaf_serial_hex_lower(cert.get());
+        const std::string issuer = leaf_issuer_rfc2253(cert.get());
+        if (!serial.empty() && !issuer.empty())
+            return AppCertIds{ serial + issuer, issuer + ":" + serial };
+    }
+    // Fallback when no chain is present: use the stored cert_id string
+    // (slicer_cert_id.txt or the embedded value) and split it for HTTP.
+    const std::string raw = resolve_cert_id_string();
+    if (raw.empty()) return {};
+    return AppCertIds{ raw, http_form_from_cert_id(raw) };
+}
+
+// Recomputed when the underlying cert changes: a live get_app_cert result can
+// arrive after the first signing call, so this cannot be a one-shot static.
+static AppCertIds app_cert_ids()
+{
+    static std::mutex  mu;
+    static std::string last_key;
+    static AppCertIds  cached;
+    const std::string  pem = slicer_cert_pem();
+    const std::string  key = pem.empty() ? ("id:" + resolve_cert_id_string()) : pem;
+    std::lock_guard<std::mutex> lk(mu);
+    if (key != last_key) { cached = compute_app_cert_ids(); last_key = key; }
+    return cached;
 }
 
 } // namespace
 
 // cert_id identifies the slicer's registered signing certificate on Bambu's
-// backend. Derived from the leaf of slicer_cert.pem:
-//   lowercase_hex(serial) + issuer_RFC2253  (no separator).
-const std::string& slicer_cert_id()
+// backend. Derived from the leaf of the app cert (serial+issuer), or the
+// stored cert_id string when no chain is available.
+std::string slicer_cert_id()
 {
     return app_cert_ids().mqtt;
 }
 
 // HTTP x-bbl-app-certification-id: issuer_RFC2253 + ":" + serial.lower(),
-// from the same leaf parse as slicer_cert_id().
-const std::string& app_certification_id()
+// from the same source as slicer_cert_id().
+std::string app_certification_id()
 {
     return app_cert_ids().http;
 }

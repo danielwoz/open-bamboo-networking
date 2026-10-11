@@ -122,35 +122,48 @@ Response perform(const Request& req)
         return resp;
     }
 
-    curl_slist* hdrs = nullptr;
-    bool        have_ua = false;
-    bool        have_accept = false;
-    bool        have_ct = false;
-    for (const auto& [k, v] : req.headers) {
-        // libcurl idiom: "Header:" (no value, no space) removes an
-        // internally-added header such as Content-Type or Expect.
-        // "Header: value" sends the header normally.
-        std::string kv = v.empty() ? (k + ":") : (k + ": " + v);
-        hdrs = curl_slist_append(hdrs, kv.c_str());
-        std::string lk = k;
-        for (auto& c : lk) c = std::tolower(static_cast<unsigned char>(c));
-        if (lk == "user-agent")   have_ua = true;
-        if (lk == "accept")       have_accept = true;
-        if (lk == "content-type") have_ct = true;
-    }
-    if (!have_ua) {
-        std::string kv = "User-Agent: " + default_user_agent();
-        hdrs = curl_slist_append(hdrs, kv.c_str());
-    }
-    if (!have_accept && !req.no_default_accept) {
-        hdrs = curl_slist_append(hdrs, "Accept: application/json");
-    }
     const bool method_has_body =
         req.method == Method::POST || req.method == Method::PUT ||
         req.method == Method::PATCH ||
         (req.method == Method::DEL && !req.body.empty());
-    if (method_has_body && !have_ct && !req.no_default_content_type) {
-        hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
+
+    curl_slist* hdrs = nullptr;
+    if (!req.ordered_headers.empty()) {
+        // Genuine-parity path: send the given headers VERBATIM, in order and
+        // casing, with NO sorting and NO default UA/Accept/Content-Type. The
+        // caller supplies the complete list in the exact genuine order (see
+        // obn::bbl::identity_headers). libcurl still prepends Host and appends
+        // Content-Length for a body, as the stock plugin's libcurl does.
+        for (const auto& [k, v] : req.ordered_headers) {
+            std::string kv = v.empty() ? (k + ":") : (k + ": " + v);
+            hdrs = curl_slist_append(hdrs, kv.c_str());
+        }
+    } else {
+        bool        have_ua = false;
+        bool        have_accept = false;
+        bool        have_ct = false;
+        for (const auto& [k, v] : req.headers) {
+            // libcurl idiom: "Header:" (no value, no space) removes an
+            // internally-added header such as Content-Type or Expect.
+            // "Header: value" sends the header normally.
+            std::string kv = v.empty() ? (k + ":") : (k + ": " + v);
+            hdrs = curl_slist_append(hdrs, kv.c_str());
+            std::string lk = k;
+            for (auto& c : lk) c = std::tolower(static_cast<unsigned char>(c));
+            if (lk == "user-agent")   have_ua = true;
+            if (lk == "accept")       have_accept = true;
+            if (lk == "content-type") have_ct = true;
+        }
+        if (!have_ua) {
+            std::string kv = "User-Agent: " + default_user_agent();
+            hdrs = curl_slist_append(hdrs, kv.c_str());
+        }
+        if (!have_accept && !req.no_default_accept) {
+            hdrs = curl_slist_append(hdrs, "Accept: application/json");
+        }
+        if (method_has_body && !have_ct && !req.no_default_content_type) {
+            hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
+        }
     }
 
     curl_easy_setopt(curl, CURLOPT_URL,              req.url.c_str());

@@ -56,9 +56,13 @@ OBN_ABI int bambu_network_send_message_to_printer(void* agent,
     return rc;
 }
 
-OBN_ABI int bambu_network_update_cert(void* /*agent*/)
+OBN_ABI int bambu_network_update_cert(void* agent)
 {
     OBN_DEBUG("update_cert");
+    // Studio's cert-refresh trigger (GUI_App::check_cert on post_init). Use it
+    // to fetch the app certificate live via get_app_cert; self-skips when
+    // already cached or when live fetch is unavailable/disabled.
+    if (auto* a = as_agent(agent)) a->refresh_app_cert();
     return BAMBU_NETWORK_SUCCESS;
 }
 

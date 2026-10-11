@@ -52,6 +52,16 @@ struct Settings {
     // the user need not log in twice. See src/studio_session.cpp.
     bool import_studio_session    = true;
 
+    // Where the app certificate (chain + CRL, for app_cert_install and cloud
+    // signing) comes from: "auto" fetches it live via get_app_cert and falls
+    // back to the embedded/config copy; "live" uses only the live fetch;
+    // "embedded" uses only the embedded/config copy. See src/app_cert.cpp.
+    std::string app_cert_source   = "auto";
+
+    // App identity ("<appCertCN><appKeyToken>") for the live get_app_cert
+    // fetch. Empty = use the build-time-embedded value (if any).
+    std::string bbl_app_identity;
+
     // Ask each freshly subscribed cloud device for a full status snapshot
     // (pushing.pushall) once per session instead of waiting for the printer
     // to volunteer telemetry.
